@@ -258,6 +258,7 @@ async function cmdSummary(args: string[]): Promise<void> {
   if (flakyTests.length > 0) {
     console.log(`  Flaky tests (${flakyTests.length}):`);
     for (const name of flakyTests) console.log(`    - ${name}`);
+    console.log(`  Run 'bun run eval:trend' for detailed time series.`);
     console.log('─'.repeat(60));
   }
 
@@ -429,6 +430,191 @@ async function cmdWatch(): Promise<void> {
   process.exit(exitCode);
 }
 
+// --- Trend tracking ---
+
+export interface TestTrend {
+  name: string;
+  tier: string;
+  results: Array<{ timestamp: string; passed: boolean }>;
+  passRate: number;
+  streak: { type: 'pass' | 'fail'; count: number };
+  flipCount: number;
+  status: 'stable-pass' | 'stable-fail' | 'flaky' | 'improving' | 'degrading';
+}
+
+/**
+ * Compute per-test pass rate trends from eval results.
+ * Pure function — no I/O. Results are ordered chronologically (oldest first).
+ */
+export function computeTrends(
+  results: EvalResult[],
+  filterTier?: string,
+  filterTest?: string,
+): TestTrend[] {
+  // Build time series per test (chronological — oldest first)
+  const byTest = new Map<string, Array<{ timestamp: string; passed: boolean }>>();
+
+  // Results from loadEvalResults are newest-first, so reverse for chronological
+  const chronological = [...results].reverse();
+
+  for (const r of chronological) {
+    if (filterTier && r.tier !== filterTier) continue;
+    for (const t of r.tests) {
+      if (filterTest && t.name !== filterTest) continue;
+      const key = `${r.tier}:${t.name}`;
+      if (!byTest.has(key)) byTest.set(key, []);
+      byTest.get(key)!.push({ timestamp: r.timestamp, passed: t.passed });
+    }
+  }
+
+  const trends: TestTrend[] = [];
+
+  for (const [key, results] of byTest) {
+    const [tier, ...nameParts] = key.split(':');
+    const name = nameParts.join(':');
+    const total = results.length;
+    const passCount = results.filter(r => r.passed).length;
+    const passRate = total > 0 ? passCount / total : 0;
+
+    // Streak: walk from newest (end of array) backward
+    let streakType: 'pass' | 'fail' = results[results.length - 1].passed ? 'pass' : 'fail';
+    let streakCount = 0;
+    for (let i = results.length - 1; i >= 0; i--) {
+      const r = results[i].passed ? 'pass' : 'fail';
+      if (r === streakType) streakCount++;
+      else break;
+    }
+
+    // Flip count: transitions between pass and fail
+    let flipCount = 0;
+    for (let i = 1; i < results.length; i++) {
+      if (results[i].passed !== results[i - 1].passed) flipCount++;
+    }
+
+    // Classify status
+    let status: TestTrend['status'];
+    const last3 = results.slice(-3);
+    const earlier = results.slice(0, -3);
+    const last3AllPass = last3.length >= 3 && last3.every(r => r.passed);
+    const last3HasFail = last3.some(r => !r.passed);
+    const earlierHadFailures = earlier.some(r => !r.passed);
+    const earlierWasPassing = earlier.length > 0 && earlier.every(r => r.passed);
+
+    // Check improving/degrading first — a clear recent trend outranks raw pass rate
+    if (last3AllPass && earlierHadFailures) {
+      status = 'improving';
+    } else if (last3HasFail && earlierWasPassing) {
+      status = 'degrading';
+    } else if (flipCount >= 3 || (passRate > 0.3 && passRate < 0.7)) {
+      status = 'flaky';
+    } else if (passRate >= 0.9 && flipCount <= 1) {
+      status = 'stable-pass';
+    } else if (passRate <= 0.1 && flipCount <= 1) {
+      status = 'stable-fail';
+    } else if (passRate >= 0.5) {
+      status = 'stable-pass';
+    } else {
+      status = 'stable-fail';
+    }
+
+    trends.push({
+      name, tier, results, passRate,
+      streak: { type: streakType, count: streakCount },
+      flipCount, status,
+    });
+  }
+
+  // Sort: flaky first, then flipCount desc, then name
+  trends.sort((a, b) => {
+    const statusOrder = { flaky: 0, degrading: 1, improving: 2, 'stable-fail': 3, 'stable-pass': 4 };
+    const sa = statusOrder[a.status] ?? 5;
+    const sb = statusOrder[b.status] ?? 5;
+    if (sa !== sb) return sa - sb;
+    if (a.flipCount !== b.flipCount) return b.flipCount - a.flipCount;
+    return a.name.localeCompare(b.name);
+  });
+
+  return trends;
+}
+
+async function cmdTrend(args: string[]): Promise<void> {
+  let limit = 10;
+  let filterTier: string | undefined;
+  let filterTest: string | undefined;
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--limit' && args[i + 1]) { limit = parseInt(args[++i], 10); }
+    else if (args[i] === '--tier' && args[i + 1]) { filterTier = args[++i]; }
+    else if (args[i] === '--test' && args[i + 1]) { filterTest = args[++i]; }
+  }
+
+  const results = loadEvalResults<EvalResult>(undefined, limit);
+  if (results.length === 0) {
+    console.log('No eval runs yet. Run: EVALS=1 bun run test:evals');
+    return;
+  }
+
+  const trends = computeTrends(results, filterTier, filterTest);
+
+  if (trends.length === 0) {
+    console.log('No test data matching filters.');
+    return;
+  }
+
+  // Determine how many result columns to show
+  const maxResults = Math.min(limit, Math.max(...trends.map(t => t.results.length)));
+
+  console.log('');
+  console.log(`Test Trends (last ${results.length} runs)`);
+  console.log('═'.repeat(80));
+  console.log(
+    '  ' +
+    'Test Name'.padEnd(36) +
+    'Rate'.padEnd(7) +
+    `Last ${maxResults}`.padEnd(maxResults + 3) +
+    'Streak'.padEnd(8) +
+    'Status'
+  );
+  console.log('─'.repeat(80));
+
+  let flakyCount = 0;
+  let degradingCount = 0;
+
+  for (const t of trends) {
+    if (t.status === 'flaky') flakyCount++;
+    if (t.status === 'degrading') degradingCount++;
+
+    const fullName = `${t.tier}:${t.name}`;
+    const displayName = fullName.length > 34 ? fullName.slice(0, 31) + '...' : fullName.padEnd(36);
+    const rate = `${Math.round(t.passRate * 100)}%`.padEnd(7);
+
+    // Build sparkline of last N results
+    const sparkline = t.results
+      .slice(-maxResults)
+      .map(r => r.passed ? '\u2713' : '\u2717')
+      .join('');
+
+    const streak = `${t.streak.count}${t.streak.type === 'pass' ? '\u2713' : '\u2717'}`.padEnd(8);
+
+    // Color status
+    let statusStr = t.status;
+    if (isTTY) {
+      if (t.status === 'flaky' || t.status === 'degrading') statusStr = red(t.status);
+      else if (t.status === 'stable-pass' || t.status === 'improving') statusStr = green(t.status);
+      else statusStr = dim(t.status);
+    }
+
+    console.log(`  ${displayName}${rate}${sparkline.padEnd(maxResults + 3)}${streak}${statusStr}`);
+  }
+
+  console.log('─'.repeat(80));
+  const parts: string[] = [`${trends.length} tests tracked`];
+  if (flakyCount > 0) parts.push(`${flakyCount} flaky`);
+  if (degradingCount > 0) parts.push(`${degradingCount} degrading`);
+  console.log(`  ${parts.join(' | ')}`);
+  console.log('');
+}
+
 function printUsage(): void {
   console.log(`
 gstack eval — eval management CLI
@@ -441,13 +627,15 @@ Commands:
   summary [--limit N]                         Aggregate stats across all runs
   push <file>                                 Validate + save + sync an eval result
   cost <file>                                 Show per-model cost breakdown
+  trend [--limit N] [--tier X] [--test X]     Per-test pass rate trends
   cache read|write|stats|clear|verify         Manage eval cache
   watch                                       Live E2E test dashboard
 `);
 }
 
-// --- Main ---
+// --- Main (only when run directly, not imported) ---
 
+if (import.meta.main) {
 const command = process.argv[2];
 const cmdArgs = process.argv.slice(3);
 
@@ -457,6 +645,7 @@ switch (command) {
   case 'summary': cmdSummary(cmdArgs); break;
   case 'push':    cmdPush(cmdArgs); break;
   case 'cost':    cmdCost(cmdArgs); break;
+  case 'trend':   cmdTrend(cmdArgs); break;
   case 'cache':   cmdCache(cmdArgs); break;
   case 'watch':   cmdWatch(); break;
   case '--help': case '-h': case 'help': case undefined:
@@ -466,4 +655,5 @@ switch (command) {
     console.error(`Unknown command: ${command}`);
     printUsage();
     process.exit(1);
+}
 }

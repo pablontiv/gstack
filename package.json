@@ -21,6 +21,7 @@
     "eval:list": "bun run lib/cli-eval.ts list",
     "eval:compare": "bun run lib/cli-eval.ts compare",
     "eval:summary": "bun run lib/cli-eval.ts summary",
+    "eval:trend": "bun run lib/cli-eval.ts trend",
     "eval:watch": "bun run lib/cli-eval.ts watch"
   },
   "dependencies": {
