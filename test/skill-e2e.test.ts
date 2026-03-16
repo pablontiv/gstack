@@ -323,10 +323,13 @@ File a contributor report about this issue. Then tell me what you filed.`,
     const logFiles = fs.readdirSync(logsDir).filter(f => f.endsWith('.md'));
     expect(logFiles.length).toBeGreaterThan(0);
 
+    // Verify new reflection-based format
     const logContent = fs.readFileSync(path.join(logsDir, logFiles[0]), 'utf-8');
     expect(logContent).toContain('Hey gstack team');
     expect(logContent).toContain('What I was trying to do');
     expect(logContent).toContain('What happened instead');
+    expect(logContent).toMatch(/rating/i);
+    expect(logContent).toMatch(/what would make/i);
 
     // Clean up
     try { fs.rmSync(contribDir, { recursive: true, force: true }); } catch {}
