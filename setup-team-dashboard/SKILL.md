@@ -83,6 +83,8 @@ select cron.schedule(
 
 Replace `<supabase-url>` and `<service-role-key>` with actual values.
 
+**Security note:** The service-role-key is stored in the `cron.job` table and visible to anyone with SQL editor access to your Supabase project. This is the standard Supabase pattern for cron → edge function calls. If this concerns you, use Supabase Vault to store the key instead.
+
 ### Step 7: Configure Slack webhook
 
 Ask the user for their Slack webhook URL (from https://api.slack.com/messaging/webhooks).

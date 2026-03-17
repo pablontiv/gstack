@@ -768,6 +768,8 @@ export function getDashboardHTML(supabaseUrl: string, anonKey: string): string {
   }
 
   // ---- Leaderboard ----
+  // NOTE: This leaderboard aggregation mirrors lib/dashboard-queries.ts computeLeaderboard().
+  // If you change the logic here, update the shared pure function too (used by CLI).
   function renderLeaderboard() {
     const ws = weekStart();
     const hasAnyData = data.evalRuns || data.shipLogs || data.transcripts;

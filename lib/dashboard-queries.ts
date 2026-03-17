@@ -228,6 +228,9 @@ export function computeCostTrend(evalRuns: Record<string, unknown>[]): CostTrend
   return { weekly, totalAllTime };
 }
 
+// NOTE: The dashboard UI (supabase/functions/dashboard/ui.ts renderLeaderboard())
+// has a parallel client-side implementation of this logic. If you change the
+// aggregation or sorting here, update the dashboard JS too.
 /**
  * Compute team leaderboard for the current week.
  */
