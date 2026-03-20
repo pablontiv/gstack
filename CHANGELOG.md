@@ -1,10 +1,12 @@
 # Changelog
 
-## [0.9.1.1] - 2026-03-20
+## [0.9.2.0] - 2026-03-20 — Gemini CLI E2E Tests
 
-### Fixed
+### Added
 
-- **gstack now works on Windows 11.** Setup no longer hangs, and the browse server automatically falls back to Node.js to work around a Bun pipe-handling bug on Windows. Just make sure Node.js is installed alongside Bun. macOS and Linux are completely unaffected. (Thanks @sozairali — PR #194)
+- **Gemini CLI is now tested end-to-end.** Two E2E tests verify that gstack skills work when invoked by Google's Gemini CLI (`gemini -p`). The `gemini-discover-skill` test confirms skill discovery from `.agents/skills/`, and `gemini-review-findings` runs a full code review via gstack-review. Both parse Gemini's stream-json NDJSON output and track token usage.
+- **Gemini JSONL parser with 10 unit tests.** `parseGeminiJSONL` handles all Gemini event types (init, message, tool_use, tool_result, result) with defensive parsing for malformed input. The parser is a pure function, independently testable without spawning the CLI.
+- **`bun run test:gemini`** and **`bun run test:gemini:all`** scripts for running Gemini E2E tests independently. Gemini tests are also included in `test:evals` and `test:e2e` aggregate scripts.
 
 ## [0.9.1.0] - 2026-03-20 — Adversarial Spec Review + Skill Chaining
 
