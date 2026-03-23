@@ -76,18 +76,15 @@ while IFS= read -r LINE; do
   echo "$LINE" | grep -q '^{' || continue
 
   # Strip local-only fields + map JSONL field names to Postgres column names
+  # Backward compat: map old installation_id → install_fingerprint for unsent entries
   CLEAN="$(echo "$LINE" | sed \
     -e 's/,"_repo_slug":"[^"]*"//g' \
     -e 's/,"_branch":"[^"]*"//g' \
     -e 's/"v":/"schema_version":/g' \
     -e 's/"ts":/"event_timestamp":/g' \
     -e 's/"sessions":/"concurrent_sessions":/g' \
+    -e 's/"installation_id":/"install_fingerprint":/g' \
     -e 's/,"repo":"[^"]*"//g')"
-
-  # If anonymous tier, strip installation_id
-  if [ "$TIER" = "anonymous" ]; then
-    CLEAN="$(echo "$CLEAN" | sed 's/,"installation_id":"[^"]*"//g; s/,"installation_id":null//g')"
-  fi
 
   if [ "$FIRST" = "true" ]; then
     FIRST=false

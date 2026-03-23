@@ -176,7 +176,7 @@ export async function runSkillTest(options: {
     cwd: workingDirectory,
     stdout: 'pipe',
     stderr: 'pipe',
-    env: { ...process.env, GSTACK_STATE_DIR: testStateDir },
+    env: { ...process.env, GSTACK_STATE_DIR: testStateDir, GSTACK_TELEMETRY_SOURCE: 'test' },
   });
 
   // Race against timeout

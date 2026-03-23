@@ -209,8 +209,12 @@ _TEL=$(${ctx.paths.binDir}/gstack-config get telemetry 2>/dev/null || true)
 _TEL_PROMPTED=$([ -f ~/.gstack/.telemetry-prompted ] && echo "yes" || echo "no")
 _TEL_START=$(date +%s)
 _SESSION_ID="$$-$(date +%s)"
+echo $_TEL_START > ~/.gstack/analytics/.tel-start-$PPID
+echo $_SESSION_ID > ~/.gstack/analytics/.tel-session-$PPID
 echo "TELEMETRY: \${_TEL:-off}"
 echo "TEL_PROMPTED: $_TEL_PROMPTED"
+echo "TEL_START: $_TEL_START"
+echo "SESSION_ID: $_SESSION_ID"
 _EMAIL=$(${ctx.paths.binDir}/gstack-config get email 2>/dev/null || true)
 _COMM_PROMPTED=$([ -f ~/.gstack/.community-prompted ] && echo "yes" || echo "no")
 _AUTH_OK=$(${ctx.paths.binDir}/gstack-auth-refresh --check 2>/dev/null && echo "yes" || echo "no")
@@ -526,7 +530,7 @@ Hey gstack team — ran into this while using /{skill-name}:
 Slug: lowercase, hyphens, max 60 chars (e.g. \`browse-js-no-await\`). Skip if file already exists. Max 3 reports per session. File inline and continue — don't stop the workflow. Tell user: "Filed gstack field report: {title}"`;
 }
 
-function generateCompletionStatus(): string {
+function generateCompletionStatus(ctx: TemplateContext): string {
   return `## Completion Status Protocol
 
 When completing a skill workflow, report status using one of:
@@ -577,11 +581,15 @@ Skipping this command loses session duration and outcome data.
 Run this bash:
 
 \`\`\`bash
+_TEL_START=$(cat ~/.gstack/analytics/.tel-start-$PPID 2>/dev/null || echo 0)
+_SESSION_ID=$(cat ~/.gstack/analytics/.tel-session-$PPID 2>/dev/null || echo "")
 _TEL_END=$(date +%s)
 _TEL_DUR=$(( _TEL_END - _TEL_START ))
+rm -f ~/.gstack/analytics/.tel-start-$PPID ~/.gstack/analytics/.tel-session-$PPID 2>/dev/null || true
 rm -f ~/.gstack/analytics/.pending-"$_SESSION_ID" 2>/dev/null || true
-~/.claude/skills/gstack/bin/gstack-telemetry-log \\
+${ctx.paths.binDir}/gstack-telemetry-log \\
   --skill "SKILL_NAME" --duration "$_TEL_DUR" --outcome "OUTCOME" \\
+  --source "\${GSTACK_TELEMETRY_SOURCE:-live}" \\
   --used-browse "USED_BROWSE" --session-id "$_SESSION_ID" \\
   --error-class "ERROR_CLASS" --error-message "ERROR_MESSAGE" \\
   --failed-step "FAILED_STEP" 2>/dev/null &
@@ -603,7 +611,7 @@ When you are in plan mode and about to call ExitPlanMode:
 3. If it does NOT — run this command:
 
 \\\`\\\`\\\`bash
-~/.claude/skills/gstack/bin/gstack-review-read
+${ctx.paths.binDir}/gstack-review-read
 \\\`\\\`\\\`
 
 Then write a \`## GSTACK REVIEW REPORT\` section to the end of the plan file:
@@ -643,7 +651,7 @@ function generatePreamble(ctx: TemplateContext): string {
     generateRepoModeSection(),
     generateSearchBeforeBuildingSection(ctx),
     generateContributorMode(),
-    generateCompletionStatus(),
+    generateCompletionStatus(ctx),
   ].join('\n\n');
 }
 

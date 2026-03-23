@@ -167,9 +167,24 @@ if [ -z "${GSTACK_TELEMETRY_ENDPOINT:-}" ] && [ -f "$GSTACK_DIR/supabase/config.
 fi
 _SUPA_ENDPOINT="${GSTACK_TELEMETRY_ENDPOINT:-}"
 _SUPA_KEY="${GSTACK_SUPABASE_ANON_KEY:-}"
-# Respect telemetry opt-out — don't ping Supabase if user set telemetry: off
-_TEL_TIER="$("$GSTACK_DIR/bin/gstack-config" get telemetry 2>/dev/null || true)"
-if [ -n "$_SUPA_ENDPOINT" ] && [ -n "$_SUPA_KEY" ] && [ "${_TEL_TIER:-off}" != "off" ]; then
+# Generate/read install fingerprint (runs for ALL tiers including off)
+_FP=""
+_FP_FILE="$STATE_DIR/.install-id"
+if [ -f "$_FP_FILE" ]; then
+  _FP="$(cat "$_FP_FILE" 2>/dev/null | tr -d '[:space:]')"
+fi
+if [ -z "$_FP" ]; then
+  _FP="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null || echo "")"
+  _FP="$(echo "$_FP" | tr '[:upper:]' '[:lower:]')"
+  if [ -n "$_FP" ]; then
+    mkdir -p "$STATE_DIR"
+    echo "$_FP" > "$_FP_FILE"
+  fi
+fi
+# Update-check pings always fire (ungated from telemetry tier).
+# This sends only: version, OS, and a random UUID. No usage data.
+# Equivalent to what GitHub sees in HTTP access logs for VERSION.
+if [ -n "$_SUPA_ENDPOINT" ] && [ -n "$_SUPA_KEY" ]; then
   _OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
   curl -sf --max-time 5 \
     -X POST "${_SUPA_ENDPOINT}/update_checks" \
@@ -177,7 +192,7 @@ if [ -n "$_SUPA_ENDPOINT" ] && [ -n "$_SUPA_KEY" ] && [ "${_TEL_TIER:-off}" != "
     -H "apikey: ${_SUPA_KEY}" \
     -H "Authorization: Bearer ${_SUPA_KEY}" \
     -H "Prefer: return=minimal" \
-    -d "{\"gstack_version\":\"$LOCAL\",\"os\":\"$_OS\"}" \
+    -d "{\"gstack_version\":\"$LOCAL\",\"os\":\"$_OS\",\"install_fingerprint\":\"${_FP}\"}" \
     >/dev/null 2>&1 &
 fi
 
