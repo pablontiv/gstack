@@ -30,8 +30,8 @@ ENV PATH="$BUN_INSTALL/bin:$PATH"
 # Claude CLI
 RUN npm i -g @anthropic-ai/claude-code
 
-# Pre-install dependencies (cached layer — only rebuilds when lockfile changes)
-COPY bun.lock package.json /workspace/
+# Pre-install dependencies (cached layer — only rebuilds when package.json changes)
+COPY package.json /workspace/
 WORKDIR /workspace
 RUN bun install && rm -rf /tmp/*
 
@@ -40,4 +40,6 @@ RUN bun --version && node --version && claude --version && jq --version && gh --
 
 # At runtime: checkout overwrites /workspace, but node_modules persists
 # if we move it out of the way and symlink back
-RUN mv /workspace/node_modules /opt/node_modules_cache
+# Save node_modules + package.json snapshot for cache validation at runtime
+RUN mv /workspace/node_modules /opt/node_modules_cache \
+    && cp /workspace/package.json /opt/node_modules_cache/.package.json
