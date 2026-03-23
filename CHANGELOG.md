@@ -1,11 +1,19 @@
 # Changelog
 
-## [0.11.4.1] - 2026-03-23 — Inline Office Hours
+## [0.11.5.1] - 2026-03-23 — Inline Office Hours
 
 ### Changed
 
 - **No more "open another window" for /office-hours.** When `/plan-ceo-review` or `/plan-eng-review` offer to run `/office-hours` first, it now runs inline in the same conversation. The review picks up right where it left off after the design doc is ready. Same for mid-session detection when you're still figuring out what to build.
 - **Handoff note infrastructure removed.** The handoff notes that bridged the old "go to another window" flow are no longer written. Existing notes from prior sessions are still read for backward compatibility.
+
+## [0.11.5.0] - 2026-03-23 — Bash Compatibility Fix
+
+### Fixed
+
+- **`gstack-review-read` and `gstack-review-log` no longer crash under bash.** These scripts used `source <(gstack-slug)` which silently fails to set variables under bash with `set -euo pipefail`, causing `SLUG: unbound variable` errors. Replaced with `eval "$(gstack-slug)"` which works correctly in both bash and zsh.
+- **All SKILL.md templates updated.** Every template that instructed agents to run `source <(gstack-slug)` now uses `eval "$(gstack-slug)"` for cross-shell compatibility. Regenerated all SKILL.md files from templates.
+- **Regression tests added.** New tests verify `eval "$(gstack-slug)"` works under bash strict mode, and guard against `source <(.*gstack-slug` patterns reappearing in templates or bin scripts.
 
 ## [0.11.4.0] - 2026-03-22 — Codex in Office Hours
 
