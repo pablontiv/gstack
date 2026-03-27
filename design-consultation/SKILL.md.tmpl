@@ -272,23 +272,16 @@ Run quality check on each variant:
 $D check --image "$_DESIGN_DIR/variant-A.png" --brief "<the original brief>"
 ```
 
-Create a comparison board and open it:
+Show each variant inline (Read tool on each PNG) for instant preview.
 
-```bash
-$D compare --images "$_DESIGN_DIR/variant-A.png,$_DESIGN_DIR/variant-B.png,$_DESIGN_DIR/variant-C.png" --output "$_DESIGN_DIR/design-board.html"
-$B goto "file://$_DESIGN_DIR/design-board.html"
-```
+Tell the user: "I've generated 3 visual directions applying your design system to a realistic [product type] screen. Pick your favorite in the comparison board that just opened in your browser. You can also remix elements across variants."
 
-Tell the user: "I've generated 3 visual directions applying your design system to a realistic [product type] screen. Pick your favorite — I'll use it to refine the design system and extract exact tokens for DESIGN.md."
+{{DESIGN_SHOTGUN_LOOP}}
 
 After the user picks a direction:
 
 - Use `$D extract --image "$_DESIGN_DIR/variant-<CHOSEN>.png"` to analyze the approved mockup and extract design tokens (colors, typography, spacing) that will populate DESIGN.md in Phase 6. This grounds the design system in what was actually approved visually, not just what was described in text.
-- If the user wants to iterate: `$D iterate --feedback "<user's feedback>" --output "$_DESIGN_DIR/refined.png"`
-- Write an `approved.json` to record the choice:
-```bash
-echo '{"approved_variant":"<VARIANT>","feedback":"<USER_FEEDBACK>","date":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","screen":"design-system","branch":"'$(git branch --show-current 2>/dev/null)'"}' > "$_DESIGN_DIR/approved.json"
-```
+- If the user wants to iterate further: `$D iterate --feedback "<user's feedback>" --output "$_DESIGN_DIR/refined.png"`
 
 **Plan mode vs. implementation mode:**
 - **If in plan mode:** Add the approved mockup path (the full `$_DESIGN_DIR` path) and extracted tokens to the plan file under an "## Approved Design Direction" section. The design system gets written to DESIGN.md when the plan is implemented.
