@@ -757,9 +757,15 @@ If \`DESIGN_READY\`: the design binary is available for visual mockup generation
 Commands:
 - \`$D generate --brief "..." --output /path.png\` — generate a single mockup
 - \`$D variants --brief "..." --count 3 --output-dir /path/\` — generate N style variants
-- \`$D compare --images "a.png,b.png,c.png" --output /path/board.html\` — comparison board
+- \`$D compare --images "a.png,b.png,c.png" --output /path/board.html --serve\` — comparison board + HTTP server
+- \`$D serve --html /path/board.html\` — serve comparison board and collect feedback via HTTP
 - \`$D check --image /path.png --brief "..."\` — vision quality gate
-- \`$D iterate --session /path/session.json --feedback "..." --output /path.png\` — iterate`;
+- \`$D iterate --session /path/session.json --feedback "..." --output /path.png\` — iterate
+
+**CRITICAL PATH RULE:** All design artifacts (mockups, comparison boards, approved.json)
+MUST be saved to \`~/.gstack/projects/$SLUG/designs/\`, NEVER to \`.context/\`,
+\`docs/designs/\`, \`/tmp/\`, or any project-local directory. Design artifacts are USER
+data, not project files. They persist across branches, conversations, and workspaces.`;
 }
 
 export function generateDesignMockup(ctx: TemplateContext): string {
@@ -780,85 +786,125 @@ D=""
 
 Generating visual mockups of the proposed design... (say "skip" if you don't need visuals)
 
-**Step 1: Construct the design brief**
+**Step 1: Set up the design directory**
+
+\`\`\`bash
+eval "$(~/.claude/skills/gstack/bin/gstack-slug 2>/dev/null)"
+_DESIGN_DIR=~/.gstack/projects/$SLUG/designs/mockup-$(date +%Y%m%d)
+mkdir -p "$_DESIGN_DIR"
+echo "DESIGN_DIR: $_DESIGN_DIR"
+\`\`\`
+
+**Step 2: Construct the design brief**
 
 Read DESIGN.md if it exists — use it to constrain the visual style. If no DESIGN.md,
 explore wide across diverse directions.
 
-Assemble a structured brief as a JSON file:
-\`\`\`bash
-cat > /tmp/gstack-design-brief.json << 'BRIEF_EOF'
-{
-  "goal": "<what this screen/page does>",
-  "audience": "<who uses it>",
-  "style": "<visual style from DESIGN.md or from the user's description>",
-  "elements": ["<list>", "<of>", "<key UI elements>"],
-  "constraints": "<any size/layout constraints>",
-  "screenType": "<desktop-dashboard|mobile-app|landing-page|settings|etc>"
-}
-BRIEF_EOF
-\`\`\`
-
-**Step 2: Generate 3 variants**
+**Step 3: Generate 3 variants**
 
 \`\`\`bash
-$D variants --brief-file /tmp/gstack-design-brief.json --count 3 --output-dir /tmp/gstack-mockups/
+$D variants --brief "<assembled brief>" --count 3 --output-dir "$_DESIGN_DIR/"
 \`\`\`
 
 This generates 3 style variations of the same brief (~40 seconds total).
 
-**Step 3: Show the comparison board**
+**Step 4: Show variants inline, then open comparison board**
+
+Show each variant to the user inline first (read the PNGs with Read tool), then
+create and serve the comparison board:
 
 \`\`\`bash
-$D compare --images "/tmp/gstack-mockups/variant-A.png,/tmp/gstack-mockups/variant-B.png,/tmp/gstack-mockups/variant-C.png" --output /tmp/gstack-design-board.html
+$D compare --images "$_DESIGN_DIR/variant-A.png,$_DESIGN_DIR/variant-B.png,$_DESIGN_DIR/variant-C.png" --output "$_DESIGN_DIR/design-board.html" --serve
 \`\`\`
 
-Open the comparison board in headed Chrome for user review:
+This opens the board in the user's default browser and blocks until feedback is
+received. Read stdout for the structured JSON result. No polling needed.
+
+If \`$D serve\` is not available or fails, fall back to AskUserQuestion:
+"I've opened the design board. Which variant do you prefer? Any feedback?"
+
+**Step 5: Handle feedback**
+
+If the JSON contains \`"regenerated": true\`:
+1. Read \`regenerateAction\` (or \`remixSpec\` for remix requests)
+2. Generate new variants with \`$D iterate\` or \`$D variants\` using updated brief
+3. Create new board with \`$D compare\`
+4. POST the new HTML to the running server via \`curl -X POST http://localhost:PORT/api/reload -H 'Content-Type: application/json' -d '{"html":"$_DESIGN_DIR/design-board.html"}'\`
+   (parse the port from stderr: look for \`SERVE_STARTED: port=XXXXX\`)
+5. Board auto-refreshes in the same tab
+
+If \`"regenerated": false\`: proceed with the approved variant.
+
+**Step 6: Save approved choice**
 
 \`\`\`bash
-$B goto file:///tmp/gstack-design-board.html
+echo '{"approved_variant":"<VARIANT>","feedback":"<FEEDBACK>","date":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","screen":"mockup","branch":"'$(git branch --show-current 2>/dev/null)'"}' > "$_DESIGN_DIR/approved.json"
 \`\`\`
 
-Tell the user: "I've generated 3 design directions and opened them in Chrome.
-Pick your favorite, rate the others, and click Submit when you're done."
+Reference the saved mockup in the design doc or plan.`;
+}
 
-**Step 4: Poll for user feedback**
+export function generateDesignShotgunLoop(_ctx: TemplateContext): string {
+  return `### Comparison Board + Feedback Loop
 
-Poll the page for the user's submission:
+Create the comparison board and serve it over HTTP:
 
 \`\`\`bash
-$B eval document.getElementById('status').textContent
+$D compare --images "$_DESIGN_DIR/variant-A.png,$_DESIGN_DIR/variant-B.png,$_DESIGN_DIR/variant-C.png" --output "$_DESIGN_DIR/design-board.html" --serve
 \`\`\`
 
-- If empty: user hasn't submitted yet. Wait 10 seconds and poll again.
-- If "submitted": read the feedback.
-- If "regenerate": user wants new variants. Read the regeneration request,
-  generate new variants with the updated brief, and refresh the comparison board.
+This command generates the board HTML, starts an HTTP server on a random port,
+and opens it in the user's default browser. It blocks until the user submits
+feedback. The feedback JSON is printed to stdout.
 
-When status is "submitted", read the structured feedback:
+**Reading the result:**
 
+The agent reads stdout. The JSON has this shape:
+\`\`\`json
+{
+  "preferred": "A",
+  "ratings": { "A": 4, "B": 3, "C": 2 },
+  "comments": { "A": "Love the spacing" },
+  "overall": "Go with A, bigger CTA",
+  "regenerated": false
+}
+\`\`\`
+
+**If \`"regenerated": true\`:**
+1. Read \`regenerateAction\` from the JSON (\`"different"\`, \`"match"\`, \`"more_like_B"\`,
+   \`"remix"\`, or custom text)
+2. If \`regenerateAction\` is \`"remix"\`, read \`remixSpec\` (e.g. \`{"layout":"A","colors":"B"}\`)
+3. Generate new variants with \`$D iterate\` or \`$D variants\` using updated brief
+4. Create new board: \`$D compare --images "..." --output "$_DESIGN_DIR/design-board.html"\`
+5. Reload the running server: parse the port from stderr (\`SERVE_STARTED: port=XXXXX\`),
+   then POST the new HTML:
+   \`curl -s -X POST http://localhost:PORT/api/reload -H 'Content-Type: application/json' -d '{"html":"$_DESIGN_DIR/design-board.html"}'\`
+6. The board auto-refreshes in the same browser tab. Wait for the next stdout line.
+7. Repeat until \`"regenerated": false\`.
+
+**If \`"regenerated": false\`:**
+1. Read \`preferred\`, \`ratings\`, \`comments\`, \`overall\` from the JSON
+2. Proceed with the approved variant
+
+**If \`$D serve\` fails or times out:** Fall back to AskUserQuestion:
+"I've opened the design board. Which variant do you prefer? Any feedback?"
+
+**After receiving feedback (any path):** Output a clear summary confirming
+what was understood:
+
+"Here's what I understood from your feedback:
+PREFERRED: Variant [X]
+RATINGS: [list]
+YOUR NOTES: [comments]
+DIRECTION: [overall]
+
+Is this right?"
+
+Use AskUserQuestion to verify before proceeding.
+
+**Save the approved choice:**
 \`\`\`bash
-$B eval document.getElementById('feedback-result').textContent
-\`\`\`
-
-This returns JSON with the user's preferred variant, star ratings, comments,
-and overall direction.
-
-**Step 5: Save approved mockup**
-
-Copy the user's preferred variant to \`docs/designs/\` (create if needed):
-
-\`\`\`bash
-mkdir -p docs/designs
-cp /tmp/gstack-mockups/variant-<PREFERRED>.png docs/designs/<skill>-<description>-$(date +%Y%m%d).png
-\`\`\`
-
-Reference the saved mockup in the design doc or plan.
-
-**Step 6: Generate HTML wireframe**
-
-After the mockup is approved, generate an HTML wireframe matching the approved
-direction using the existing DESIGN_SKETCH approach. The wireframe is what the
-agent implements from — the mockup is what the human approved.`;
+echo '{"approved_variant":"<V>","feedback":"<FB>","date":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","screen":"<SCREEN>","branch":"'$(git branch --show-current 2>/dev/null)'"}' > "$_DESIGN_DIR/approved.json"
+\`\`\``;
 }
 
