@@ -14,6 +14,7 @@ allowed-tools:
   - Read
   - Glob
   - Grep
+  - Agent
   - AskUserQuestion
 ---
 <!-- AUTO-GENERATED from SKILL.md.tmpl — do not edit directly -->
@@ -477,67 +478,111 @@ echo "DESIGN_DIR: $_DESIGN_DIR"
 
 Replace `<screen-name>` with a descriptive kebab-case name from the context gathering.
 
-**Timing estimate:** Before generating, tell the user:
+### Step 3a: Concept Generation
 
-> "Generating {N} variants. Each takes ~60 seconds. Total ~{N} minutes. I'll show each one as it lands."
+Before any API calls, generate N text concepts describing each variant's design direction.
+Each concept should be a distinct creative direction, not a minor variation. Present them
+as a lettered list:
 
-**If evolving from a screenshot** (user said "I don't like THIS"):
+```
+I'll explore 3 directions:
 
-First, take ONE screenshot of the current page:
+A) "Name" — one-line visual description of this direction
+B) "Name" — one-line visual description of this direction
+C) "Name" — one-line visual description of this direction
+```
+
+Draw on DESIGN.md, taste memory, and the user's request to make each concept distinct.
+
+### Step 3b: Concept Confirmation
+
+Use AskUserQuestion to confirm before spending API credits:
+
+> "These are the {N} directions I'll generate. Each takes ~60s, but I'll run them all
+> in parallel so total time is ~60 seconds regardless of count."
+
+Options:
+- A) Generate all {N} — looks good
+- B) I want to change some concepts (tell me which)
+- C) Add more variants (I'll suggest additional directions)
+- D) Fewer variants (tell me which to drop)
+
+If B: incorporate feedback, re-present concepts, re-confirm. Max 2 rounds.
+If C: add concepts, re-present, re-confirm.
+If D: drop specified concepts, re-present, re-confirm.
+
+### Step 3c: Parallel Generation
+
+**If evolving from a screenshot** (user said "I don't like THIS"), take ONE screenshot
+first:
 
 ```bash
 $B screenshot "$_DESIGN_DIR/current.png"
 ```
 
-Then for each evolved variant (A, B, C):
-1. Tell the user: "Generating Variant {letter}: {description}..."
-2. Run:
-```bash
-$D evolve --screenshot "$_DESIGN_DIR/current.png" --brief "<improvement brief for this variant>" --output /tmp/variant-{letter}.png
-cp /tmp/variant-{letter}.png "$_DESIGN_DIR/variant-{letter}.png"
+**Launch N Agent subagents in a single message** (parallel execution). Use the Agent
+tool with `subagent_type: "general-purpose"` for each variant. Each agent is independent
+and handles its own generation, quality check, verification, and retry.
+
+**Important: $D path propagation.** The `$D` variable from DESIGN SETUP is a shell
+variable that agents do NOT inherit. Substitute the resolved absolute path (from the
+`DESIGN_READY: /path/to/design` output in Step 0) into each agent prompt.
+
+**Agent prompt template** (one per variant, substitute all `{...}` values):
+
 ```
-3. Verify the file exists: `ls -la "$_DESIGN_DIR/variant-{letter}.png"`. If missing, retry once with `$D generate` as fallback.
-4. Read the PNG inline (Read tool) so the user sees it immediately.
-5. Tell the user: "Variant {letter} done. ({file size})"
+Generate a design variant and save it.
 
-**Otherwise** (fresh exploration):
+Design binary: {absolute path to $D binary}
+Brief: {the full variant-specific brief for this direction}
+Output: /tmp/variant-{letter}.png
+Final location: {_DESIGN_DIR absolute path}/variant-{letter}.png
 
-For each variant (A, B, C, ...N):
-1. Tell the user: "Generating Variant {letter}: {one-line description of this variant's direction}..."
-2. Run:
-```bash
-$D generate --brief "<variant-specific brief>" --output /tmp/variant-{letter}.png
-cp /tmp/variant-{letter}.png "$_DESIGN_DIR/variant-{letter}.png"
+Steps:
+1. Run: {$D path} generate --brief "{brief}" --output /tmp/variant-{letter}.png
+2. If the command fails with a rate limit error (429 or "rate limit"), wait 5 seconds
+   and retry. Up to 3 retries.
+3. If the output file is missing or empty after the command succeeds, retry once.
+4. Copy: cp /tmp/variant-{letter}.png {_DESIGN_DIR}/variant-{letter}.png
+5. Quality check: {$D path} check --image {_DESIGN_DIR}/variant-{letter}.png --brief "{brief}"
+   If quality check fails, retry generation once.
+6. Verify: ls -lh {_DESIGN_DIR}/variant-{letter}.png
+7. Report exactly one of:
+   VARIANT_{letter}_DONE: {file size}
+   VARIANT_{letter}_FAILED: {error description}
+   VARIANT_{letter}_RATE_LIMITED: exhausted retries
 ```
-3. Verify the file exists and has non-zero size:
-```bash
-if [ ! -f "$_DESIGN_DIR/variant-{letter}.png" ] || [ ! -s "$_DESIGN_DIR/variant-{letter}.png" ]; then
-  echo "MISSING: variant-{letter}.png — retrying..."
-  $D generate --brief "<same brief>" --output /tmp/variant-{letter}.png
-  cp /tmp/variant-{letter}.png "$_DESIGN_DIR/variant-{letter}.png"
-fi
-ls -lh "$_DESIGN_DIR/variant-{letter}.png"
+
+For the evolve path, replace step 1 with:
 ```
-4. Read the PNG inline (Read tool) so the user sees it immediately.
-5. Tell the user: "Variant {letter} done. ({file size})"
-
-Each variant gets its own `$D generate` call (NOT `$D variants` batch). This means:
-- The user sees each variant ~60s after it starts, not all at ~180s
-- Silent failures are caught immediately, not discovered later by `ls`
-- Each variant can have a distinct brief tuned to its design direction
-
-Run quality check after each variant:
-```bash
-$D check --image "$_DESIGN_DIR/variant-{letter}.png" --brief "<the brief>"
+{$D path} evolve --screenshot {_DESIGN_DIR}/current.png --brief "{brief}" --output /tmp/variant-{letter}.png
 ```
 
 **Why /tmp/ then cp?** In observed sessions, `$D generate --output ~/.gstack/...`
 failed with "The operation was aborted" while `--output /tmp/...` succeeded. This is
-likely a sandbox restriction on the `~/.gstack/` path. Always generate to `/tmp/` first,
-then `cp` to `$_DESIGN_DIR/`. This is the default pattern, not a fallback.
+a sandbox restriction. Always generate to `/tmp/` first, then `cp`.
 
-**If a variant fails after retry:** Report explicitly: "Variant {letter} failed to
-generate after retry. Continuing with the remaining variants." Do NOT silently skip.
+### Step 3d: Results
+
+After all agents complete:
+
+1. Read each generated PNG inline (Read tool) so the user sees all variants at once.
+2. Report status: "All {N} variants generated in ~{actual time}. {successes} succeeded,
+   {failures} failed."
+3. For any failures: report explicitly with the error. Do NOT silently skip.
+4. If zero variants succeeded: fall back to sequential generation (one at a time with
+   `$D generate`, showing each as it lands). Tell the user: "Parallel generation failed
+   (likely rate limiting). Falling back to sequential..."
+5. Proceed to Step 4 (comparison board).
+
+**Dynamic image list for comparison board:** When proceeding to Step 4, construct the
+image list from whatever variant files actually exist, not a hardcoded A/B/C list:
+
+```bash
+_IMAGES=$(ls "$_DESIGN_DIR"/variant-*.png 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+```
+
+Use `$_IMAGES` in the `$D compare --images` command.
 
 ## Step 4: Comparison Board + Feedback Loop
 

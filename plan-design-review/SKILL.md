@@ -577,7 +577,10 @@ echo "DESIGN_DIR: $_DESIGN_DIR"
 
 Replace `<screen-name>` with a descriptive kebab-case name (e.g., `homepage-variants`, `settings-page`, `onboarding-flow`).
 
-**Generate mockups ONE AT A TIME. Do not parallelize `$D generate` calls.** The underlying API rate-limits concurrent image generation. When 3 generates run in parallel, 1 succeeds and 2 get aborted.
+**Generate mockups ONE AT A TIME in this skill.** The inline review flow generates
+fewer variants and benefits from sequential control. Note: /design-shotgun uses
+parallel Agent subagents for variant generation, which works at Tier 2+ (15+ RPM).
+The sequential constraint here is specific to plan-design-review's inline pattern.
 
 For each UI screen/section in scope, construct a design brief from the plan's description (and DESIGN.md if present) and generate variants:
 
