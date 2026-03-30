@@ -939,3 +939,181 @@ describe('chat toolbar buttons disabled state', () => {
     expect(css).toContain('pointer-events: none');
   });
 });
+
+// ─── LLM-based cleanup architecture ─────────────────────────────
+
+describe('LLM-based cleanup (smart agent cleanup)', () => {
+  const js = fs.readFileSync(path.join(ROOT, '..', 'extension', 'sidepanel.js'), 'utf-8');
+  const wcSrc = fs.readFileSync(path.join(ROOT, 'src', 'write-commands.ts'), 'utf-8');
+
+  test('cleanup button uses /sidebar-command not /command', () => {
+    const cleanupFn = js.slice(
+      js.indexOf('async function runCleanup('),
+      js.indexOf('async function runScreenshot('),
+    );
+    // Should POST to sidebar-command (agent) not /command (deterministic)
+    expect(cleanupFn).toContain('/sidebar-command');
+    // Should NOT directly call the cleanup command endpoint
+    expect(cleanupFn).not.toMatch(/fetch.*\/command['"]/);
+  });
+
+  test('cleanup prompt includes deterministic first pass', () => {
+    const cleanupFn = js.slice(
+      js.indexOf('async function runCleanup('),
+      js.indexOf('async function runScreenshot('),
+    );
+    // First run the deterministic sweep
+    expect(cleanupFn).toContain('cleanup --all');
+  });
+
+  test('cleanup prompt instructs agent to snapshot and analyze', () => {
+    const cleanupFn = js.slice(
+      js.indexOf('async function runCleanup('),
+      js.indexOf('async function runScreenshot('),
+    );
+    // Agent should take a snapshot to see what deterministic pass missed
+    expect(cleanupFn).toContain('snapshot -i');
+    // Agent should analyze what remains
+    expect(cleanupFn).toContain('identify remaining non-content');
+  });
+
+  test('cleanup prompt lists specific clutter categories for agent', () => {
+    const cleanupFn = js.slice(
+      js.indexOf('async function runCleanup('),
+      js.indexOf('async function runScreenshot('),
+    );
+    // Should guide the agent on what to look for
+    expect(cleanupFn).toContain('Ad placeholder');
+    expect(cleanupFn).toContain('ADVERTISEMENT');
+    expect(cleanupFn).toContain('Cookie');
+    expect(cleanupFn).toContain('Audio/podcast');
+    expect(cleanupFn).toContain('Sidebar widget');
+    expect(cleanupFn).toContain('Social share');
+    expect(cleanupFn).toContain('Floating chat');
+  });
+
+  test('cleanup prompt instructs agent to preserve site identity', () => {
+    const cleanupFn = js.slice(
+      js.indexOf('async function runCleanup('),
+      js.indexOf('async function runScreenshot('),
+    );
+    // Must keep the site looking like itself
+    expect(cleanupFn).toContain('KEEP');
+    expect(cleanupFn).toContain('header/masthead/logo');
+    expect(cleanupFn).toContain('article headline');
+    expect(cleanupFn).toContain('article body');
+    expect(cleanupFn).toContain('author byline');
+  });
+
+  test('cleanup prompt instructs agent to unlock scrolling', () => {
+    const cleanupFn = js.slice(
+      js.indexOf('async function runCleanup('),
+      js.indexOf('async function runScreenshot('),
+    );
+    expect(cleanupFn).toContain('unlock scrolling');
+    expect(cleanupFn).toContain('overflow');
+  });
+
+  test('cleanup prompt instructs agent to use $B eval for removal', () => {
+    const cleanupFn = js.slice(
+      js.indexOf('async function runCleanup('),
+      js.indexOf('async function runScreenshot('),
+    );
+    // Agent should use $B eval to hide elements via JavaScript
+    expect(cleanupFn).toContain('$B eval');
+    expect(cleanupFn).toContain("display=");
+  });
+
+  test('cleanup shows notification while agent works', () => {
+    const cleanupFn = js.slice(
+      js.indexOf('async function runCleanup('),
+      js.indexOf('async function runScreenshot('),
+    );
+    expect(cleanupFn).toContain('agent is analyzing');
+  });
+
+  test('cleanup removes loading state after short delay (agent is async)', () => {
+    const cleanupFn = js.slice(
+      js.indexOf('async function runCleanup('),
+      js.indexOf('async function runScreenshot('),
+    );
+    // Should use setTimeout since agent runs asynchronously
+    expect(cleanupFn).toContain('setTimeout');
+    expect(cleanupFn).toContain("classList.remove('loading')");
+  });
+
+  test('deterministic cleanup still has comprehensive selectors as first pass', () => {
+    // The deterministic $B cleanup --all still needs good selectors for the quick pass
+    expect(wcSrc).toContain('ads: [');
+    expect(wcSrc).toContain('cookies: [');
+    expect(wcSrc).toContain('social: [');
+    expect(wcSrc).toContain('overlays: [');
+    expect(wcSrc).toContain('clutter: [');
+  });
+
+  test('deterministic cleanup clutter covers audio/podcast widgets', () => {
+    expect(wcSrc).toContain('audio-player');
+    expect(wcSrc).toContain('podcast-player');
+    expect(wcSrc).toContain('listen-widget');
+    expect(wcSrc).toContain('everlit');
+    expect(wcSrc).toContain("'audio'"); // bare audio elements
+  });
+
+  test('deterministic cleanup clutter covers sidebar recirculation', () => {
+    expect(wcSrc).toContain('most-popular');
+    expect(wcSrc).toContain('most-read');
+    expect(wcSrc).toContain('recommended');
+    expect(wcSrc).toContain('taboola');
+    expect(wcSrc).toContain('outbrain');
+    expect(wcSrc).toContain('nativo');
+  });
+
+  test('deterministic cleanup clutter covers games/puzzles', () => {
+    expect(wcSrc).toContain('puzzle');
+    expect(wcSrc).toContain('daily-game');
+    expect(wcSrc).toContain('crossword-promo');
+  });
+
+  test('ad label text detection catches common patterns', () => {
+    expect(wcSrc).toContain('/^advertisement$/i');
+    expect(wcSrc).toContain('/^sponsored$/i');
+    expect(wcSrc).toContain('/^promoted$/i');
+    expect(wcSrc).toContain('/article continues/i');
+    expect(wcSrc).toContain('/continues below/i');
+    expect(wcSrc).toContain('/^paid content$/i');
+    expect(wcSrc).toContain('/^partner content$/i');
+  });
+
+  test('ad label detection skips elements with too much text (not a label)', () => {
+    // Should skip elements with >50 chars (probably real content)
+    expect(wcSrc).toContain('text.length > 50');
+  });
+
+  test('ad label detection hides parent wrapper when small enough', () => {
+    // If parent has little content, hide the whole wrapper
+    expect(wcSrc).toContain('parent.textContent');
+    expect(wcSrc).toContain('trim().length < 80');
+  });
+
+  test('sticky removal sorts by vertical position (topmost first)', () => {
+    expect(wcSrc).toContain('sort((a, b) => a.top - b.top)');
+  });
+
+  test('sticky removal preserves first full-width element near top', () => {
+    expect(wcSrc).toContain('preservedTopNav');
+    // Should check element spans most of viewport
+    expect(wcSrc).toContain('viewportWidth * 0.8');
+    // Should only preserve the first one
+    expect(wcSrc).toContain('!preservedTopNav');
+    // Should check it's near the top
+    expect(wcSrc).toContain('top <= 50');
+    // Should check it's not too tall (it's a nav, not a hero)
+    expect(wcSrc).toContain('height < 120');
+  });
+
+  test('sticky removal still skips semantic nav/header elements', () => {
+    expect(wcSrc).toContain("tag === 'nav'");
+    expect(wcSrc).toContain("tag === 'header'");
+    expect(wcSrc).toContain("role') === 'navigation'");
+  });
+});
