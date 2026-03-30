@@ -590,6 +590,59 @@ body::after {
 }
 
 /* ─── Command Bar ─────────────────────────────────────── */
+/* ─── Quick Actions Toolbar ─────────────────────────────── */
+
+.quick-actions {
+  display: flex;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.quick-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 10px;
+  background: none;
+  border: 1px solid var(--zinc-600);
+  border-radius: var(--radius-sm);
+  color: var(--text-label);
+  font-family: var(--font-system);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 150ms;
+}
+
+.quick-action-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-body);
+  border-color: var(--zinc-400);
+}
+
+.quick-action-btn:active {
+  transform: scale(0.96);
+}
+
+.quick-action-btn.loading {
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+.quick-action-btn.loading::after {
+  content: '';
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--zinc-600);
+  border-top-color: var(--amber-400);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
 .command-bar {
   display: flex;
   align-items: center;

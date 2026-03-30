@@ -1149,73 +1149,74 @@ inspectorSendBtn.addEventListener('click', () => {
   chrome.runtime.sendMessage({ type: 'sidebar-command', message });
 });
 
-// ─── Cleanup Button ─────────────────────────────────────────────
+// ─── Quick Action Helpers (shared between chat toolbar + inspector) ──
+
+async function runCleanup(...buttons) {
+  if (!serverUrl || !serverToken) {
+    addChatEntry({ type: 'notification', message: 'Not connected to browse server' });
+    return;
+  }
+  buttons.forEach(b => b?.classList.add('loading'));
+  try {
+    const resp = await fetch(`${serverUrl}/command`, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'cleanup', args: ['--all'] }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const text = await resp.text();
+    if (resp.ok) {
+      addChatEntry({ type: 'notification', message: text || 'Page cleaned up' });
+      if (typeof inspectorShowEmpty === 'function') inspectorShowEmpty();
+    } else {
+      const err = JSON.parse(text).error || 'Cleanup failed';
+      addChatEntry({ type: 'notification', message: 'Error: ' + err });
+    }
+  } catch (err) {
+    addChatEntry({ type: 'notification', message: 'Cleanup failed: ' + err.message });
+  } finally {
+    buttons.forEach(b => b?.classList.remove('loading'));
+  }
+}
+
+async function runScreenshot(...buttons) {
+  if (!serverUrl || !serverToken) {
+    addChatEntry({ type: 'notification', message: 'Not connected to browse server' });
+    return;
+  }
+  buttons.forEach(b => b?.classList.add('loading'));
+  try {
+    const resp = await fetch(`${serverUrl}/command`, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'screenshot', args: [] }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const text = await resp.text();
+    if (resp.ok) {
+      addChatEntry({ type: 'notification', message: text || 'Screenshot saved' });
+    } else {
+      const err = JSON.parse(text).error || 'Screenshot failed';
+      addChatEntry({ type: 'notification', message: 'Error: ' + err });
+    }
+  } catch (err) {
+    addChatEntry({ type: 'notification', message: 'Screenshot failed: ' + err.message });
+  } finally {
+    buttons.forEach(b => b?.classList.remove('loading'));
+  }
+}
+
+// ─── Wire up all cleanup/screenshot buttons (inspector + chat toolbar) ──
 
 const inspectorCleanupBtn = document.getElementById('inspector-cleanup-btn');
-if (inspectorCleanupBtn) {
-  inspectorCleanupBtn.addEventListener('click', async () => {
-    if (inspectorCleanupBtn.classList.contains('loading')) return;
-    if (!serverUrl || !serverToken) {
-      addChatEntry({ type: 'notification', message: 'Not connected to browse server' });
-      return;
-    }
-    inspectorCleanupBtn.classList.add('loading');
-    try {
-      const resp = await fetch(`${serverUrl}/command`, {
-        method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: 'cleanup', args: ['--all'] }),
-        signal: AbortSignal.timeout(15000),
-      });
-      const text = await resp.text();
-      if (resp.ok) {
-        addChatEntry({ type: 'notification', message: text || 'Page cleaned up' });
-        // Reset inspector — selected element may have been removed
-        inspectorShowEmpty();
-      } else {
-        const err = JSON.parse(text).error || 'Cleanup failed';
-        addChatEntry({ type: 'notification', message: 'Error: ' + err });
-      }
-    } catch (err) {
-      addChatEntry({ type: 'notification', message: 'Cleanup failed: ' + err.message });
-    } finally {
-      inspectorCleanupBtn.classList.remove('loading');
-    }
-  });
-}
-
-// ─── Screenshot Button ──────────────────────────────────────────
-
 const inspectorScreenshotBtn = document.getElementById('inspector-screenshot-btn');
-if (inspectorScreenshotBtn) {
-  inspectorScreenshotBtn.addEventListener('click', async () => {
-    if (inspectorScreenshotBtn.classList.contains('loading')) return;
-    if (!serverUrl || !serverToken) {
-      addChatEntry({ type: 'notification', message: 'Not connected to browse server' });
-      return;
-    }
-    inspectorScreenshotBtn.classList.add('loading');
-    try {
-      const resp = await fetch(`${serverUrl}/command`, {
-        method: 'POST',
-        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: 'screenshot', args: [] }),
-        signal: AbortSignal.timeout(15000),
-      });
-      const text = await resp.text();
-      if (resp.ok) {
-        addChatEntry({ type: 'notification', message: text || 'Screenshot saved' });
-      } else {
-        const err = JSON.parse(text).error || 'Screenshot failed';
-        addChatEntry({ type: 'notification', message: 'Error: ' + err });
-      }
-    } catch (err) {
-      addChatEntry({ type: 'notification', message: 'Screenshot failed: ' + err.message });
-    } finally {
-      inspectorScreenshotBtn.classList.remove('loading');
-    }
-  });
-}
+const chatCleanupBtn = document.getElementById('chat-cleanup-btn');
+const chatScreenshotBtn = document.getElementById('chat-screenshot-btn');
+
+if (inspectorCleanupBtn) inspectorCleanupBtn.addEventListener('click', () => runCleanup(inspectorCleanupBtn, chatCleanupBtn));
+if (inspectorScreenshotBtn) inspectorScreenshotBtn.addEventListener('click', () => runScreenshot(inspectorScreenshotBtn, chatScreenshotBtn));
+if (chatCleanupBtn) chatCleanupBtn.addEventListener('click', () => runCleanup(chatCleanupBtn, inspectorCleanupBtn));
+if (chatScreenshotBtn) chatScreenshotBtn.addEventListener('click', () => runScreenshot(chatScreenshotBtn, inspectorScreenshotBtn));
 
 // ─── Section Toggles ────────────────────────────────────────────
 
