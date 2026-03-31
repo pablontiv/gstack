@@ -326,6 +326,9 @@ function startBasicPicker() {
   document.addEventListener('keydown', onBasicKeydown, true);
 }
 
+// Notify the page that the gstack extension is active (used by welcome page)
+document.dispatchEvent(new CustomEvent('gstack-extension-ready'));
+
 // Listen for messages from background worker
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'startBasicPicker') {
