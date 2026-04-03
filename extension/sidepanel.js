@@ -1402,42 +1402,84 @@ function setLoadingStatus(msg, debug) {
   if (dbg && debug !== undefined) dbg.textContent = debug;
 }
 
-function tryConnect() {
+async function tryConnect() {
   connectAttempts++;
   setLoadingStatus(
     `Looking for browse server... (attempt ${connectAttempts})`,
     `Asking background.js for server port...`
   );
 
-  chrome.runtime.sendMessage({ type: 'getPort' }, (resp) => {
-    if (chrome.runtime.lastError) {
-      setLoadingStatus(
-        `Extension error (attempt ${connectAttempts})`,
-        `chrome.runtime.sendMessage failed:\n${chrome.runtime.lastError.message}`
-      );
-      setTimeout(tryConnect, 2000);
-      return;
-    }
+  // Step 1: Ask background for the port
+  const resp = await new Promise(resolve => {
+    chrome.runtime.sendMessage({ type: 'getPort' }, (r) => {
+      if (chrome.runtime.lastError) {
+        resolve({ error: chrome.runtime.lastError.message });
+      } else {
+        resolve(r || {});
+      }
+    });
+  });
 
-    const port = resp?.port || '?';
-    const connected = resp?.connected || false;
-    const hasToken = !!(resp?.token);
+  if (resp.error) {
+    setLoadingStatus(
+      `Extension error (attempt ${connectAttempts})`,
+      `chrome.runtime.sendMessage failed:\n${resp.error}`
+    );
+    setTimeout(tryConnect, 2000);
+    return;
+  }
 
-    if (resp && resp.port && resp.connected) {
+  const port = resp.port || 34567;
+
+  // Step 2: If background says connected + has token, use that
+  if (resp.port && resp.connected && resp.token) {
+    setLoadingStatus(
+      `Server found on port ${port}, connecting...`,
+      `token: yes\nStarting SSE + chat polling...`
+    );
+    updateConnection(`http://127.0.0.1:${port}`, resp.token);
+    return;
+  }
+
+  // Step 3: Background not connected yet. Try hitting /health directly.
+  // This bypasses the background.js health poll timing gap.
+  setLoadingStatus(
+    `Checking server directly... (attempt ${connectAttempts})`,
+    `port: ${port}\nbackground connected: ${resp.connected || false}\nTrying GET http://127.0.0.1:${port}/health ...`
+  );
+
+  try {
+    const healthResp = await fetch(`http://127.0.0.1:${port}/health`, {
+      signal: AbortSignal.timeout(2000)
+    });
+    if (healthResp.ok) {
+      const data = await healthResp.json();
+      if (data.status === 'healthy' && data.token) {
+        setLoadingStatus(
+          `Server healthy on port ${port}, connecting...`,
+          `token: yes (from /health)\nStarting SSE + chat polling...`
+        );
+        updateConnection(`http://127.0.0.1:${port}`, data.token);
+        return;
+      }
       setLoadingStatus(
-        `Server found on port ${port}, connecting...`,
-        `token: ${hasToken ? 'yes' : 'NO'}\nStarting SSE + chat polling...`
+        `Server responded but not healthy (attempt ${connectAttempts})`,
+        `status: ${data.status}\ntoken: ${data.token ? 'yes' : 'no'}`
       );
-      const url = `http://127.0.0.1:${resp.port}`;
-      updateConnection(url, resp.token || null);
     } else {
       setLoadingStatus(
-        `Waiting for server... (attempt ${connectAttempts})`,
-        `port: ${port}\nserver responding: ${connected}\ntoken: ${hasToken ? 'yes' : 'no'}\n\n${!connected ? 'The browse server may still be starting.\nRun /open-gstack-browser in Claude Code.' : 'Server found but not healthy yet.'}`
+        `Server returned ${healthResp.status} (attempt ${connectAttempts})`,
+        `GET /health → ${healthResp.status} ${healthResp.statusText}`
       );
-      setTimeout(tryConnect, 2000);
     }
-  });
+  } catch (e) {
+    setLoadingStatus(
+      `Server not reachable on port ${port} (attempt ${connectAttempts})`,
+      `GET /health failed: ${e.message}\n\nThe browse server may still be starting.\nRun /open-gstack-browser in Claude Code.`
+    );
+  }
+
+  setTimeout(tryConnect, 2000);
 }
 tryConnect();
 
