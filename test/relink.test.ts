@@ -162,6 +162,108 @@ describe('gstack-relink (#578)', () => {
     expect(fs.lstatSync(path.join(skillsDir, 'qa', 'SKILL.md')).isSymbolicLink()).toBe(true);
   });
 
+  // FIRST INSTALL: --no-prefix must create ONLY flat names, zero gstack-* pollution
+  test('first install --no-prefix: only flat names exist, zero gstack-* entries', () => {
+    setupMockInstall(['qa', 'ship', 'review', 'plan-ceo-review', 'gstack-upgrade']);
+    // Simulate first install: no saved config, pass --no-prefix equivalent
+    run(`${path.join(installDir, 'bin', 'gstack-config')} set skill_prefix false`);
+    run(`${path.join(installDir, 'bin', 'gstack-relink')}`, {
+      GSTACK_INSTALL_DIR: installDir,
+      GSTACK_SKILLS_DIR: skillsDir,
+    });
+    // Enumerate everything in skills dir
+    const entries = fs.readdirSync(skillsDir);
+    // Expected: qa, ship, review, plan-ceo-review, gstack-upgrade (its real name)
+    expect(entries.sort()).toEqual(['gstack-upgrade', 'plan-ceo-review', 'qa', 'review', 'ship']);
+    // No gstack-qa, gstack-ship, gstack-review, gstack-plan-ceo-review
+    const leaked = entries.filter(e => e.startsWith('gstack-') && e !== 'gstack-upgrade');
+    expect(leaked).toEqual([]);
+  });
+
+  // FIRST INSTALL: --prefix must create ONLY gstack-* names, zero flat-name pollution
+  test('first install --prefix: only gstack-* entries exist, zero flat names', () => {
+    setupMockInstall(['qa', 'ship', 'review', 'plan-ceo-review', 'gstack-upgrade']);
+    run(`${path.join(installDir, 'bin', 'gstack-config')} set skill_prefix true`);
+    run(`${path.join(installDir, 'bin', 'gstack-relink')}`, {
+      GSTACK_INSTALL_DIR: installDir,
+      GSTACK_SKILLS_DIR: skillsDir,
+    });
+    const entries = fs.readdirSync(skillsDir);
+    // Expected: gstack-qa, gstack-ship, gstack-review, gstack-plan-ceo-review, gstack-upgrade
+    expect(entries.sort()).toEqual([
+      'gstack-plan-ceo-review', 'gstack-qa', 'gstack-review', 'gstack-ship', 'gstack-upgrade',
+    ]);
+    // No unprefixed qa, ship, review, plan-ceo-review
+    const leaked = entries.filter(e => !e.startsWith('gstack-'));
+    expect(leaked).toEqual([]);
+  });
+
+  // FIRST INSTALL: non-TTY (no saved config, piped stdin) defaults to flat names
+  test('non-TTY first install defaults to flat names via relink', () => {
+    setupMockInstall(['qa', 'ship']);
+    // Don't set any config — simulate fresh install
+    // gstack-relink reads config; on fresh install config returns empty → defaults to false
+    run(`${path.join(installDir, 'bin', 'gstack-relink')}`, {
+      GSTACK_INSTALL_DIR: installDir,
+      GSTACK_SKILLS_DIR: skillsDir,
+    });
+    const entries = fs.readdirSync(skillsDir);
+    // Should be flat names (relink defaults to false when config returns empty)
+    expect(entries.sort()).toEqual(['qa', 'ship']);
+  });
+
+  // SWITCH: prefix → no-prefix must clean up ALL gstack-* entries
+  test('switching prefix to no-prefix removes all gstack-* entries completely', () => {
+    setupMockInstall(['qa', 'ship', 'review', 'plan-ceo-review', 'gstack-upgrade']);
+    // Start in prefix mode
+    run(`${path.join(installDir, 'bin', 'gstack-config')} set skill_prefix true`);
+    run(`${path.join(installDir, 'bin', 'gstack-relink')}`, {
+      GSTACK_INSTALL_DIR: installDir,
+      GSTACK_SKILLS_DIR: skillsDir,
+    });
+    let entries = fs.readdirSync(skillsDir);
+    expect(entries.filter(e => !e.startsWith('gstack-'))).toEqual([]);
+
+    // Switch to no-prefix
+    run(`${path.join(installDir, 'bin', 'gstack-config')} set skill_prefix false`);
+    run(`${path.join(installDir, 'bin', 'gstack-relink')}`, {
+      GSTACK_INSTALL_DIR: installDir,
+      GSTACK_SKILLS_DIR: skillsDir,
+    });
+    entries = fs.readdirSync(skillsDir);
+    // Only flat names + gstack-upgrade (its real name)
+    expect(entries.sort()).toEqual(['gstack-upgrade', 'plan-ceo-review', 'qa', 'review', 'ship']);
+    const leaked = entries.filter(e => e.startsWith('gstack-') && e !== 'gstack-upgrade');
+    expect(leaked).toEqual([]);
+  });
+
+  // SWITCH: no-prefix → prefix must clean up ALL flat entries
+  test('switching no-prefix to prefix removes all flat entries completely', () => {
+    setupMockInstall(['qa', 'ship', 'review', 'gstack-upgrade']);
+    // Start in no-prefix mode
+    run(`${path.join(installDir, 'bin', 'gstack-config')} set skill_prefix false`);
+    run(`${path.join(installDir, 'bin', 'gstack-relink')}`, {
+      GSTACK_INSTALL_DIR: installDir,
+      GSTACK_SKILLS_DIR: skillsDir,
+    });
+    let entries = fs.readdirSync(skillsDir);
+    expect(entries.filter(e => e.startsWith('gstack-') && e !== 'gstack-upgrade')).toEqual([]);
+
+    // Switch to prefix
+    run(`${path.join(installDir, 'bin', 'gstack-config')} set skill_prefix true`);
+    run(`${path.join(installDir, 'bin', 'gstack-relink')}`, {
+      GSTACK_INSTALL_DIR: installDir,
+      GSTACK_SKILLS_DIR: skillsDir,
+    });
+    entries = fs.readdirSync(skillsDir);
+    // Only gstack-* names
+    expect(entries.sort()).toEqual([
+      'gstack-qa', 'gstack-review', 'gstack-ship', 'gstack-upgrade',
+    ]);
+    const leaked = entries.filter(e => !e.startsWith('gstack-'));
+    expect(leaked).toEqual([]);
+  });
+
   // Test 13: cleans stale symlinks from opposite mode
   test('cleans up stale symlinks from opposite mode', () => {
     setupMockInstall(['qa', 'ship']);
