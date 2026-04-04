@@ -1,0 +1,811 @@
+---
+name: setup-google-auth
+preamble-tier: 2
+version: 1.0.0
+description: |
+  Set up Google API credentials for your project via gstack. Auto-detects needed APIs
+  from code imports, uses gcloud CLI to create projects and enable APIs, guides through
+  OAuth consent, stores credentials in .env, writes config to CLAUDE.md. Supports
+  token health checks, scope upgrades, multi-account, and OpenClaw vault integration.
+  Use when: "setup google auth", "google api", "connect to google calendar",
+  "google oauth", "enable google apis".
+voice-triggers:
+  - "set up google"
+  - "google auth"
+  - "google api"
+allowed-tools:
+  - Bash
+  - Read
+  - Write
+  - Edit
+  - Glob
+  - Grep
+  - AskUserQuestion
+---
+
+{{PREAMBLE}}
+
+# /setup-google-auth — Google API Credentials Setup
+
+You are helping the user set up Google API access for their project. Your job:
+1. Figure out which Google APIs the project needs (auto-detect + ask)
+2. Set up gcloud CLI and GCP project
+3. Enable APIs, configure OAuth consent, create credentials
+4. Store credentials securely in .env (never committed)
+5. Write config to CLAUDE.md so any agent knows what Google APIs are available
+
+After this runs, any agent reading CLAUDE.md can authenticate and call Google APIs.
+
+## User-invocable
+When the user types `/setup-google-auth`, run this skill.
+When the user types `/setup-google-auth check`, skip to the Token Health Check section.
+
+## Critical Security Rules
+
+- **NEVER print full secrets.** Client secrets, refresh tokens, API keys, and service
+  account private keys MUST NOT appear in console output. Show only the first 8
+  characters followed by `...` for verification.
+- **NEVER commit credentials.** Always verify `.env` and credential JSON files are
+  in `.gitignore` before writing them.
+- **NEVER store credentials in CLAUDE.md.** Only metadata goes there (project ID,
+  API list, credential file location, scopes). No secrets.
+
+## Instructions
+
+### Step 1: Check existing configuration
+
+```bash
+grep -A 30 "## Google API Configuration" CLAUDE.md 2>/dev/null || echo "NO_CONFIG"
+```
+
+Also scan for existing credentials:
+```bash
+setopt +o nomatch 2>/dev/null || true  # zsh compat
+ls -la .env credentials.json client_secret*.json google-service-account*.json 2>/dev/null || echo "NO_CRED_FILES"
+env | grep -i "GOOGLE_" 2>/dev/null | sed 's/=.*/=***/' || echo "NO_GOOGLE_ENV"
+```
+
+If configuration already exists in CLAUDE.md, show it and ask:
+
+- **Context:** Google API configuration already exists in CLAUDE.md.
+- **RECOMMENDATION:** Choose E unless you need changes.
+- A) Reconfigure from scratch (overwrite existing)
+- B) Add more APIs to the existing configuration
+- C) Upgrade scopes (e.g., read-only to read-write)
+- D) Run token health check
+- E) Done, configuration looks correct
+
+If the user picks C, skip to the **Scope Upgrade Flow** section.
+If the user picks D, skip to the **Token Health Check** section.
+If the user picks E, stop.
+
+### Step 2: Auto-detect Google imports
+
+Scan the codebase for known Google API import patterns. Use the Grep tool (not bash grep).
+
+Search for these patterns:
+
+**Node.js** (search package.json and *.ts/*.js files):
+- `@google-cloud/` — maps to the specific API after the slash (e.g., `@google-cloud/storage` = Cloud Storage)
+- `googleapis` — generic Google APIs client. Check usage for specific APIs.
+- `@googlemaps/` — Maps API
+- `nodemailer` with gmail transport — Gmail API
+
+**Python** (search requirements.txt, Pipfile, pyproject.toml, *.py files):
+- `google-cloud-` — maps to specific API (e.g., `google-cloud-storage` = Cloud Storage)
+- `google-api-python-client` or `googleapiclient` — generic client
+- `google-auth` or `google.oauth2` — OAuth (generic)
+- `googlemaps` — Maps API
+
+**Go** (search go.mod):
+- `google.golang.org/api/` — maps to specific API (e.g., `google.golang.org/api/calendar` = Calendar)
+- `cloud.google.com/go/` — maps to specific API (e.g., `cloud.google.com/go/storage` = Cloud Storage)
+
+If imports are detected, present them: "I found these Google API dependencies in your project:
+[list]. I'll pre-select these in the API menu. You can add or remove APIs in the next step."
+
+If no imports detected, say so and proceed to the API menu.
+
+### Step 3: API selection and credential type
+
+Use AskUserQuestion. Pre-fill selections from Step 2 if applicable.
+
+**Which Google APIs do you need?** (type the letters, e.g., "A, C, D")
+
+**User-facing (require OAuth — user must consent):**
+- A) Google Calendar — read/write events, manage calendars
+- B) Gmail — read/send email, manage labels
+- C) Google Drive — read/write files, manage folders
+- D) Google Sheets — read/write spreadsheet data
+- E) Google Docs — read/write documents
+- F) Google Contacts (People API) — read/write contacts
+- G) Google Tasks — read/write task lists
+
+**Server-side (work with service accounts — no user consent needed):**
+- H) Google Maps — geocoding, directions, places
+- I) YouTube Data API — search videos, manage channels
+- J) Cloud Vision — image analysis, OCR
+- K) Cloud Translation — translate text
+- L) BigQuery — run SQL queries on datasets
+- M) Cloud Storage (GCS) — upload/download files to buckets
+- N) Firebase Admin — Firestore, Auth, messaging
+
+- O) Other — I'll specify the API name and scope
+
+**RECOMMENDATION:** Most projects need 1-3 APIs. If auto-detect found APIs, those are pre-selected.
+
+After the user selects, determine the credential type:
+
+1. If ANY user-facing APIs selected (A-G) → **OAuth 2.0 Client** (required for user-delegated access)
+2. If ONLY server-side APIs selected (H-N) → Ask:
+   - A) Service Account (simplest — no user login needed, server-to-server)
+   - B) OAuth 2.0 Client (if you need to act as a specific user)
+   - C) API Key only (Maps, Translation — simpler but limited)
+   - **RECOMMENDATION:** Choose A for server-side automation.
+3. If mixed → **OAuth 2.0 Client** (handles both with proper scopes)
+
+Then ask about access level for each selected API:
+
+For user-facing APIs:
+- **Read-only** (safer, recommended for most use cases)
+- **Read + write** (needed if creating/modifying data)
+
+**RECOMMENDATION:** Start with read-only. You can upgrade scopes later with `/setup-google-auth`.
+
+### Scope mapping reference
+
+Use this table to map API selections to gcloud library names and OAuth scopes:
+
+| API | gcloud library name | Read-only scope | Read-write scope |
+|-----|-------------------|-----------------|------------------|
+| Calendar | `calendar-json.googleapis.com` | `calendar.readonly` | `calendar` |
+| Gmail | `gmail.googleapis.com` | `gmail.readonly` | `gmail.modify` |
+| Drive | `drive.googleapis.com` | `drive.readonly` | `drive` |
+| Sheets | `sheets.googleapis.com` | `spreadsheets.readonly` | `spreadsheets` |
+| Docs | `docs.googleapis.com` | `documents.readonly` | `documents` |
+| Contacts | `people.googleapis.com` | `contacts.readonly` | `contacts` |
+| Tasks | `tasks.googleapis.com` | `tasks.readonly` | `tasks` |
+| Maps | `maps-backend.googleapis.com` | (API key) | (API key) |
+| YouTube | `youtube.googleapis.com` | `youtube.readonly` | `youtube` |
+| Vision | `vision.googleapis.com` | `cloud-vision` | `cloud-vision` |
+| Translation | `translate.googleapis.com` | `cloud-translation` | `cloud-translation` |
+| BigQuery | `bigquery.googleapis.com` | `bigquery.readonly` | `bigquery` |
+| Cloud Storage | `storage.googleapis.com` | `devstorage.read_only` | `devstorage.read_write` |
+| Firebase | `firebase.googleapis.com` | (service account) | (service account) |
+
+All OAuth scopes are prefixed with `https://www.googleapis.com/auth/` when building auth URLs.
+
+Store the selected APIs, credential type, and scopes. You will need them for the remaining steps.
+
+### Step 4: gcloud detection and setup
+
+```bash
+which gcloud 2>/dev/null && gcloud --version 2>/dev/null | head -1 || echo "GCLOUD_NOT_FOUND"
+```
+
+**If gcloud is found:** Proceed to Step 5.
+
+**If gcloud is NOT found:** Use AskUserQuestion:
+
+- **Context:** The gcloud CLI is Google's official tool for managing GCP resources. It makes
+  project creation, API enablement, and credential management much faster and more reliable
+  than doing it through the web console.
+- **RECOMMENDATION:** Choose A if you're on macOS. gcloud is useful beyond this skill.
+- A) Install via Homebrew (macOS): `brew install google-cloud-sdk`
+- B) Install via apt (Debian/Ubuntu): adds Google repo + installs
+- C) Download directly from Google (all platforms)
+- D) Skip gcloud — I'll do it through the browser instead
+
+If A:
+```bash
+brew install google-cloud-sdk
+```
+
+If B:
+```bash
+echo "deb [signed-by=/usr/share/keyrings/cloud.google.asc] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list
+curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo tee /usr/share/keyrings/cloud.google.asc > /dev/null
+sudo apt update && sudo apt install google-cloud-cli
+```
+
+If C: Tell the user to download from the Google Cloud SDK page and follow the install instructions.
+
+If D: **Switch to guided handoff mode.** For Steps 5-8 and 10, instead of running gcloud
+commands, navigate to the correct GCP Console page via `$B goto`, provide clear instructions
+for what the user should do on that page, and verify after they confirm. Use the
+**Browser Fallback** sections below each step.
+
+After install, verify:
+```bash
+gcloud --version 2>/dev/null | head -1
+```
+
+### Step 5: Authenticate gcloud
+
+```bash
+gcloud auth print-access-token 2>/dev/null | head -c 10 && echo "...AUTHENTICATED" || echo "NOT_AUTHENTICATED"
+```
+
+If not authenticated:
+```bash
+gcloud auth login
+```
+This opens a browser window for Google login. Wait for the user to complete it.
+
+After auth, verify the account:
+```bash
+gcloud config get-value account 2>/dev/null
+```
+
+Tell the user which Google account is active. If they need a different account, run
+`gcloud auth login` again.
+
+**Multi-account note:** If the user specified they want multi-account support, ask which
+account name to use for this setup (e.g., "work" or "personal"). This name becomes the
+env var prefix (e.g., `GOOGLE_WORK_CLIENT_ID`).
+
+**Browser fallback:** Skip this step. The browser session from cookie import handles auth.
+
+### Step 6: GCP project selection or creation
+
+**Idempotency check:** First list existing projects.
+
+```bash
+gcloud projects list --format="table(projectId,name,projectNumber)" 2>/dev/null | head -20
+```
+
+Use AskUserQuestion to show the list and let the user pick:
+
+- A) Use existing project: [project-id] (show the top projects)
+- B) Create a new project
+- **RECOMMENDATION:** Choose A if you see a project that fits. Creating a new project is
+  fine too — it's free.
+
+If creating:
+```bash
+gcloud projects create PROJECT_ID --name="PROJECT_NAME" 2>&1
+```
+
+If the create fails (org policy, quota, etc.), fall back to selecting an existing project.
+
+After selection, set the project:
+```bash
+gcloud config set project PROJECT_ID
+```
+
+Store the PROJECT_ID for subsequent steps.
+
+**Browser fallback:**
+```bash
+$B goto "https://console.cloud.google.com/projectselector2/home/dashboard"
+$B snapshot -i
+```
+Tell the user: "Select or create a GCP project. Tell me the project ID when done."
+
+### Step 7: Billing check
+
+```bash
+gcloud billing projects describe PROJECT_ID --format="value(billingAccountName)" 2>/dev/null || echo "NO_BILLING"
+```
+
+If no billing is associated and any selected API requires billing (most do except a few
+free-tier APIs), tell the user:
+
+"This project needs a billing account to enable most Google APIs. Billing is required
+even for free-tier usage of many APIs. Please set up billing and tell me when done."
+
+```bash
+$B goto "https://console.cloud.google.com/billing/linkedaccount?project=PROJECT_ID"
+$B handoff "Please link a billing account to this project. If you don't have one, create one (a credit card is required but many APIs have generous free tiers). Tell me when done."
+```
+
+After the user confirms, re-check billing.
+
+**Browser fallback:** Same as above — billing setup always requires the web console.
+
+### Step 8: Enable APIs
+
+**Idempotency check:** List currently enabled APIs first.
+```bash
+gcloud services list --enabled --project=PROJECT_ID --format="value(config.name)" 2>/dev/null
+```
+
+For each selected API that is NOT already enabled, enable it:
+```bash
+gcloud services enable LIBRARY_NAME --project=PROJECT_ID
+```
+
+Use the library names from the scope mapping table in Step 3.
+
+Report progress:
+```
+Enabling APIs...
+  [done] Calendar API (calendar-json.googleapis.com)
+  [done] Gmail API (gmail.googleapis.com)
+  [enabling...] Google Drive API (drive.googleapis.com)
+```
+
+If any API fails with a billing error, refer the user back to Step 7.
+
+**Browser fallback:** For each API, navigate to its enablement page:
+```bash
+$B goto "https://console.cloud.google.com/apis/library/LIBRARY_NAME?project=PROJECT_ID"
+$B snapshot -i
+```
+Tell the user: "Click the 'Enable' button on this page." After they confirm, verify with a snapshot.
+
+### Step 9: OAuth consent screen (OAuth path only)
+
+Skip this step if the credential type is service account or API key only.
+
+Check if consent screen is already configured:
+```bash
+$B goto "https://console.cloud.google.com/apis/credentials/consent?project=PROJECT_ID"
+$B snapshot -i
+```
+
+If the consent screen is NOT configured (page shows "Configure Consent Screen" or similar):
+
+{{BROWSE_SETUP}}
+
+```bash
+$B handoff "Please configure the OAuth consent screen. Here's what to fill in:
+
+1. User Type: Choose 'External' (unless you have Google Workspace, then choose 'Internal')
+2. App name: Your app name (e.g., 'My Calendar App')
+3. User support email: Your email
+4. Developer contact email: Your email
+5. Scopes: Click 'Add or remove scopes' and add the scopes for your selected APIs
+6. Test users: Add your own email address
+7. Click 'Save and Continue' through all steps
+
+IMPORTANT: Apps in 'Testing' status have a 7-day refresh token expiry.
+Unverified apps work with up to 100 test users — fine for development.
+
+Tell me when you're done."
+```
+
+After the user confirms, verify:
+```bash
+$B goto "https://console.cloud.google.com/apis/credentials/consent?project=PROJECT_ID"
+$B snapshot -i
+```
+
+Check that the page shows consent screen details (app name, etc.) rather than a setup prompt.
+
+### Step 10: Create credentials
+
+#### OAuth 2.0 Client path
+
+**Idempotency check:** List existing OAuth clients.
+```bash
+$B goto "https://console.cloud.google.com/apis/credentials?project=PROJECT_ID"
+$B snapshot -i
+```
+
+If an OAuth client already exists and the user wants to reuse it, extract its client ID
+and secret from the page or ask the user for them.
+
+If creating a new one:
+
+```bash
+$B handoff "Please create an OAuth 2.0 Client ID:
+1. Click '+ CREATE CREDENTIALS' at the top
+2. Select 'OAuth client ID'
+3. Application type: 'Desktop app' (recommended for CLI/agent use)
+4. Name: 'gstack-agent' (or your preferred name)
+5. Click 'Create'
+
+After creation, you'll see the Client ID and Client Secret in a dialog.
+DON'T close that dialog yet — tell me when it appears so I can read the values."
+```
+
+After the user confirms the dialog is showing:
+```bash
+$B snapshot -i
+```
+
+Extract the Client ID and Client Secret from the page. Store them in memory.
+Print only truncated versions: `Client ID: xxxxx...apps.googleusercontent.com`
+
+If the user closed the dialog before you could read it:
+```bash
+$B goto "https://console.cloud.google.com/apis/credentials?project=PROJECT_ID"
+$B snapshot -i
+```
+Click the OAuth client name to see its details, or offer to download the JSON.
+
+#### Service Account path
+
+**Idempotency check:**
+```bash
+gcloud iam service-accounts list --project=PROJECT_ID --format="table(email,displayName)" 2>/dev/null
+```
+
+If a suitable service account exists, ask the user if they want to reuse it or create a new one.
+
+Create:
+```bash
+gcloud iam service-accounts create gstack-agent --display-name="gstack agent" --project=PROJECT_ID
+```
+
+Get the service account email:
+```bash
+gcloud iam service-accounts list --project=PROJECT_ID --filter="displayName:gstack agent" --format="value(email)"
+```
+
+Create a key:
+```bash
+gcloud iam service-accounts keys create google-service-account.json --iam-account=SA_EMAIL
+```
+
+Bind IAM roles based on selected APIs:
+```bash
+gcloud projects add-iam-policy-binding PROJECT_ID --member="serviceAccount:SA_EMAIL" --role="ROLE" --quiet
+```
+
+Map APIs to roles:
+| API | Recommended Role |
+|-----|-----------------|
+| BigQuery | `roles/bigquery.user` |
+| Cloud Storage | `roles/storage.objectViewer` (read) or `roles/storage.objectAdmin` (read-write) |
+| Vision | `roles/aiplatform.user` |
+| Translation | `roles/cloudtranslate.user` |
+| Firebase | `roles/firebase.admin` |
+
+Report which roles were bound.
+
+#### API Key path
+
+```bash
+$B goto "https://console.cloud.google.com/apis/credentials?project=PROJECT_ID"
+$B handoff "Please create an API Key:
+1. Click '+ CREATE CREDENTIALS' at the top
+2. Select 'API key'
+3. A key will be generated immediately
+4. Optionally restrict it to specific APIs
+5. Tell me when you see the key."
+```
+
+Extract the API key from the page after the user confirms.
+
+### Step 11: OAuth authorization flow (OAuth path only)
+
+Skip this step for service accounts and API keys.
+
+Build the OAuth authorization URL. Construct the scopes string from the selected APIs
+using the scope mapping table (prefix each scope with `https://www.googleapis.com/auth/`).
+
+```bash
+_SCOPES="SCOPE1+SCOPE2+SCOPE3"  # URL-encoded, + separated
+_AUTH_URL="https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_CLIENT_ID}&redirect_uri=http://localhost:8080/callback&response_type=code&scope=${_SCOPES}&access_type=offline&prompt=consent"
+```
+
+Start a temporary callback server to catch the auth code:
+```bash
+python3 -c "
+import http.server, urllib.parse, sys, json
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        if 'code' in q:
+            print(f'AUTH_CODE={q[\"code\"][0]}', flush=True)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'<html><body><h1>Authorization successful!</h1><p>You can close this tab and return to your terminal.</p></body></html>')
+            raise SystemExit(0)
+        self.send_response(400)
+        self.end_headers()
+    def log_message(self, *a): pass
+try:
+    http.server.HTTPServer(('localhost', 8080), H).serve_forever()
+except OSError:
+    # Port 8080 busy, try 8081-8089
+    for p in range(8081, 8090):
+        try:
+            http.server.HTTPServer(('localhost', p), H).serve_forever()
+        except OSError: continue
+" &
+_SERVER_PID=$!
+echo "Callback server started (PID: $_SERVER_PID)"
+```
+
+Open the auth URL in the user's default browser:
+```bash
+open "$_AUTH_URL" 2>/dev/null || xdg-open "$_AUTH_URL" 2>/dev/null || echo "Please open this URL in your browser: $_AUTH_URL"
+```
+
+Tell the user: "A browser window should open asking you to authorize the app. Select your
+Google account and click 'Allow'. You'll be redirected to a page saying 'Authorization
+successful!' Tell me when that appears."
+
+After the user confirms, the callback server should have printed the AUTH_CODE. Kill it:
+```bash
+kill $_SERVER_PID 2>/dev/null || true
+```
+
+Exchange the auth code for tokens:
+```bash
+curl -s -X POST https://oauth2.googleapis.com/token \
+  -d "code=${AUTH_CODE}" \
+  -d "client_id=${GOOGLE_CLIENT_ID}" \
+  -d "client_secret=${GOOGLE_CLIENT_SECRET}" \
+  -d "redirect_uri=http://localhost:8080/callback" \
+  -d "grant_type=authorization_code"
+```
+
+Parse the response to extract `access_token` and `refresh_token`. Store them in memory.
+Print only truncated versions for verification.
+
+If the response contains an error, explain what went wrong (common: wrong redirect URI,
+consent not granted, code expired).
+
+**IMPORTANT:** The redirect_uri in the token exchange MUST exactly match the one registered
+in the OAuth client AND the one used in the auth URL. If using a port other than 8080,
+update accordingly.
+
+**Limitation:** This localhost callback flow does not work in remote/devcontainer/SSH environments
+where the user's browser cannot reach localhost on the machine running the skill. In those
+cases, the user must use the "copy code" manual flow or set up port forwarding.
+
+### Step 12: Store credentials
+
+**Pre-write security checks:**
+
+```bash
+setopt +o nomatch 2>/dev/null || true  # zsh compat
+# 1. Ensure .gitignore exists and protects credential files
+[ -f .gitignore ] || touch .gitignore
+grep -q "^\.env$" .gitignore 2>/dev/null || echo ".env" >> .gitignore
+grep -q "^\.env\.local$" .gitignore 2>/dev/null || echo ".env.local" >> .gitignore
+grep -q "google-service-account" .gitignore 2>/dev/null || echo "google-service-account*.json" >> .gitignore
+grep -q "client_secret" .gitignore 2>/dev/null || echo "client_secret*.json" >> .gitignore
+grep -q "credentials\.json" .gitignore 2>/dev/null || echo "credentials.json" >> .gitignore
+```
+
+```bash
+# 2. CRITICAL: Verify .env is NOT tracked by git
+git ls-files .env 2>/dev/null | grep -q "\.env" && echo "DANGER_TRACKED" || echo "SAFE"
+```
+
+If `DANGER_TRACKED`: STOP. Tell the user: ".env is tracked by git. This means your
+credentials would be committed. Run `git rm --cached .env` to untrack it, then re-run
+this step." Do NOT proceed until the user confirms.
+
+**Idempotency check:** Read existing .env and check if Google env vars already exist.
+```bash
+grep "^GOOGLE_" .env 2>/dev/null || echo "NO_EXISTING_GOOGLE_VARS"
+```
+
+If Google vars already exist, ask the user if they want to overwrite or keep existing.
+
+**Write credentials to .env:**
+
+For OAuth (single account):
+```
+# Google OAuth (configured by /setup-google-auth on YYYY-MM-DD)
+GOOGLE_CLIENT_ID=<client_id>
+GOOGLE_CLIENT_SECRET=<client_secret>
+GOOGLE_REFRESH_TOKEN=<refresh_token>
+GOOGLE_PROJECT_ID=<project_id>
+```
+
+For OAuth (multi-account, using the account name from Step 5):
+```
+# Google OAuth — ACCOUNT_NAME account (configured by /setup-google-auth on YYYY-MM-DD)
+GOOGLE_ACCOUNTNAME_CLIENT_ID=<client_id>
+GOOGLE_ACCOUNTNAME_CLIENT_SECRET=<client_secret>
+GOOGLE_ACCOUNTNAME_REFRESH_TOKEN=<refresh_token>
+GOOGLE_ACCOUNTNAME_PROJECT_ID=<project_id>
+```
+
+For service accounts:
+```
+# Google Service Account (configured by /setup-google-auth on YYYY-MM-DD)
+GOOGLE_APPLICATION_CREDENTIALS=./google-service-account.json
+GOOGLE_PROJECT_ID=<project_id>
+```
+
+For API keys:
+```
+# Google API Key (configured by /setup-google-auth on YYYY-MM-DD)
+GOOGLE_API_KEY=<api_key>
+GOOGLE_PROJECT_ID=<project_id>
+```
+
+Use the Write or Edit tool to append to `.env`. Then set permissions:
+```bash
+chmod 600 .env
+[ -f google-service-account.json ] && chmod 600 google-service-account.json
+```
+
+### Step 13: Write CLAUDE.md and verify
+
+Read CLAUDE.md (or create it if it doesn't exist). Find the `## Google API Configuration`
+section and replace it, or append it at the end.
+
+Write this configuration block (metadata only, no secrets):
+
+```markdown
+## Google API Configuration (configured by /setup-google-auth)
+- GCP Project: PROJECT_ID
+- Credential type: OAuth 2.0 Client (Desktop) / Service Account / API Key
+- Enabled APIs: [list of enabled APIs]
+- Credentials: .env (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN)
+- Scopes: [list of scopes, e.g., calendar.readonly, gmail.readonly]
+- Accounts: default / [account names if multi-account]
+- Note: For production, consider Workload Identity Federation instead of refresh tokens.
+  Apps in "Testing" status have 7-day refresh token expiry — publish the app to remove this limit.
+
+### Token Refresh
+To get a fresh access token from the refresh token:
+\```bash
+curl -s -X POST https://oauth2.googleapis.com/token \
+  -d "client_id=$GOOGLE_CLIENT_ID" \
+  -d "client_secret=$GOOGLE_CLIENT_SECRET" \
+  -d "refresh_token=$GOOGLE_REFRESH_TOKEN" \
+  -d "grant_type=refresh_token" | jq -r .access_token
+\```
+```
+
+**Verify** the credentials work with a test API call. Pick the simplest API from
+the user's selection:
+
+For Calendar:
+```bash
+_TOKEN=$(curl -s -X POST https://oauth2.googleapis.com/token \
+  -d "client_id=$(grep GOOGLE_CLIENT_ID .env | cut -d= -f2)" \
+  -d "client_secret=$(grep GOOGLE_CLIENT_SECRET .env | cut -d= -f2)" \
+  -d "refresh_token=$(grep GOOGLE_REFRESH_TOKEN .env | cut -d= -f2)" \
+  -d "grant_type=refresh_token" | jq -r .access_token)
+curl -s -H "Authorization: Bearer $_TOKEN" \
+  "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=1" | jq .kind
+```
+
+For Drive:
+```bash
+curl -s -H "Authorization: Bearer $_TOKEN" \
+  "https://www.googleapis.com/drive/v3/about?fields=user" | jq .user.emailAddress
+```
+
+For service accounts with BigQuery:
+```bash
+curl -s -H "Authorization: Bearer $(gcloud auth print-access-token --impersonate-service-account=SA_EMAIL 2>/dev/null)" \
+  "https://bigquery.googleapis.com/bigquery/v2/projects/PROJECT_ID/datasets" | jq .kind
+```
+
+Report the verification result. If it fails, explain common causes (token expired,
+wrong scopes, API not enabled, insufficient permissions).
+
+**Print the completion summary:**
+
+```
+GOOGLE API SETUP — COMPLETE
+════════════════════════════
+Project:      PROJECT_ID
+Credential:   OAuth 2.0 Client (Desktop) / Service Account / API Key
+APIs enabled: Calendar, Gmail, Drive
+Scopes:       calendar.readonly, gmail.readonly, drive.readonly
+Credentials:  .env (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN)
+Verification: PASSED — Calendar API returned data
+Account:      default / ACCOUNT_NAME
+
+Saved to CLAUDE.md. Agents can now use these Google APIs.
+
+Next steps:
+- Your refresh token is ready — use the curl command in CLAUDE.md to get access tokens
+- Run /setup-google-auth again to add more APIs or upgrade scopes
+- Run /setup-google-auth check to verify tokens are still valid
+```
+
+### OpenClaw/Clawvisor Vault Integration
+
+After Step 13 completes, check for OpenClaw/Clawvisor integration:
+
+```bash
+ls clawvisor.yaml openclaw.yaml .openclaw/ 2>/dev/null && echo "OPENCLAW_DETECTED" || echo "NO_OPENCLAW"
+```
+
+If `OPENCLAW_DETECTED`:
+
+1. Read the Clawvisor config to find the vault endpoint
+2. Register Google credentials as a named service in the vault using the Clawvisor API
+   (agents submit structured JSON service definitions, never see raw credentials)
+3. Add to the CLAUDE.md config block: `- Vault service: google-apis (via Clawvisor)`
+4. Agents should reference the vault service name instead of raw env vars when Clawvisor
+   is available
+
+If the vault API is unreachable or the config format is unrecognized, skip with a warning:
+"Clawvisor detected but vault API unreachable. Credentials stored in .env only."
+
+---
+
+## Token Health Check
+
+When the user runs `/setup-google-auth check`, run this section.
+
+1. Read existing config from CLAUDE.md to get the credential type, APIs, and scopes.
+
+2. Load credentials from `.env`:
+```bash
+source .env 2>/dev/null
+echo "CLIENT_ID: $(echo $GOOGLE_CLIENT_ID | head -c 15)..."
+echo "PROJECT: $GOOGLE_PROJECT_ID"
+```
+
+3. Test the refresh token:
+```bash
+_RESULT=$(curl -s -X POST https://oauth2.googleapis.com/token \
+  -d "client_id=$GOOGLE_CLIENT_ID" \
+  -d "client_secret=$GOOGLE_CLIENT_SECRET" \
+  -d "refresh_token=$GOOGLE_REFRESH_TOKEN" \
+  -d "grant_type=refresh_token")
+echo "$_RESULT" | jq -r '.access_token // .error' | head -c 20
+```
+
+If the result is an access token: token is valid.
+If the result is `invalid_grant`: the refresh token has expired or been revoked.
+  - If the app is in "Testing" status, the 7-day expiry likely kicked in.
+  - Tell the user: "Your refresh token has expired. Options: (A) Re-run /setup-google-auth
+    to re-consent, (B) Publish your app in GCP Console to remove the 7-day limit."
+If the result is `invalid_client`: client ID or secret is wrong.
+
+4. Test each enabled API with a simple GET:
+```bash
+_TOKEN=$(echo "$_RESULT" | jq -r .access_token)
+```
+
+For each API in the CLAUDE.md config, make a minimal test call and report pass/fail.
+
+5. Print the health report:
+```
+GOOGLE API HEALTH CHECK
+═══════════════════════
+Token:     VALID (expires in Xm)
+Project:   PROJECT_ID
+
+API Status:
+  Calendar:  PASS — returned calendarList
+  Gmail:     PASS — returned profile
+  Drive:     FAIL — 403 Forbidden (check scopes)
+
+Action needed:
+  - Drive API returned 403. Your current scope may be insufficient.
+    Run /setup-google-auth and choose option C to upgrade scopes.
+```
+
+---
+
+## Scope Upgrade Flow
+
+When the user runs `/setup-google-auth` and selects option C (upgrade scopes):
+
+1. Read existing config from CLAUDE.md to get current scopes.
+2. Show current scopes and ask what to add or change.
+3. Build a new OAuth authorization URL with ALL scopes (existing + new).
+   Google OAuth requires re-consent for scope changes. The old refresh token is
+   invalidated when a new one is issued.
+4. Run the OAuth authorization flow (Step 11) with the expanded scopes.
+5. Replace the old refresh token in `.env` with the new one.
+6. Update CLAUDE.md with the new scope list.
+
+Tell the user: "Scope upgrade requires re-authorization. You'll see a consent screen
+with the expanded permissions. After you approve, the old refresh token is replaced."
+
+---
+
+## Important Rules
+
+- **Never expose secrets.** Don't print full API keys, client secrets, refresh tokens,
+  or private keys.
+- **Confirm with the user.** Always show the detected config and ask for confirmation
+  before writing to `.env` or CLAUDE.md.
+- **CLAUDE.md is the source of truth for metadata.** All agent-readable config lives there.
+  Credentials live in `.env`. Never mix them.
+- **Idempotent.** Running /setup-google-auth multiple times overwrites previous config cleanly.
+  Always check for existing resources before creating new ones.
+- **Handoff generously.** The GCP console UI changes. When in doubt, handoff rather than
+  trying to automate a complex form.
+- **.gitignore is non-negotiable.** Never write credentials to a file that could be committed.
+- **gcloud is preferred.** Use gcloud CLI when available. Fall back to guided browser
+  handoff (navigate + instruct + verify) when gcloud is not installed.
