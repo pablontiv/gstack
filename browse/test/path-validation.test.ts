@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { validateOutputPath } from '../src/meta-commands';
 import { validateReadPath } from '../src/read-commands';
-import { symlinkSync, unlinkSync, writeFileSync } from 'fs';
+import { readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -32,6 +32,26 @@ describe('validateOutputPath', () => {
 
   it('blocks path traversal via ..', () => {
     expect(() => validateOutputPath('/tmp/../etc/passwd')).toThrow(/Path must be within/);
+  });
+});
+
+describe('upload command path validation', () => {
+  const src = readFileSync(join(__dirname, '..', 'src', 'write-commands.ts'), 'utf-8');
+
+  it('validates upload paths with isPathWithin', () => {
+    const uploadBlock = src.slice(src.indexOf("case 'upload'"), src.indexOf("case 'dialog-accept'"));
+    expect(uploadBlock).toContain('isPathWithin');
+  });
+
+  it('blocks path traversal in upload', () => {
+    const uploadBlock = src.slice(src.indexOf("case 'upload'"), src.indexOf("case 'dialog-accept'"));
+    expect(uploadBlock).toContain("'..'");
+  });
+
+  it('checks absolute paths against safe directories', () => {
+    const uploadBlock = src.slice(src.indexOf("case 'upload'"), src.indexOf("case 'dialog-accept'"));
+    expect(uploadBlock).toContain('path.isAbsolute');
+    expect(uploadBlock).toContain('SAFE_DIRECTORIES');
   });
 });
 
