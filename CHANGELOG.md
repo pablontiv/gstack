@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.15.7.0] - 2026-04-04 — OpenClaw Integration Design
+
+The architecture for running gstack inside OpenClaw ("two runtimes, one brain"). Your
+OpenClaw agent becomes the always-on orchestrator, gstack becomes the deep-work coding
+engine. Shared memory, dispatch protocol, Clawvisor security gateway.
+
+### Added
+
+- **OpenClaw v0 design doc.** Full architecture: generator-native skill output (already
+  done via multi-host), bidirectional learnings bridge, dispatch daemon with smart retry,
+  Clawvisor security gateway with standing tasks, session handoff with resume prompts,
+  weekly activity index, and universal dispatch protocol.
+- **SOUL.md for OpenClaw agents.** Persistent personality file that captures the builder
+  ethos: completeness, search-before-building, direct voice, structured dispatch reporting.
+- **JSON Schema contracts.** Four schemas (dispatch, completion, handoff, activity-entry)
+  with formal type definitions so both runtimes validate against the same contract.
+- **COMPATIBILITY.md.** Schema evolution rules: additive-only for minor versions, strict
+  semver for breaking changes. "Breaking" defined in writing before you need it.
+- **OpenClaw host config enhancements.** Added `triggers` (renamed from voice-triggers),
+  `min_openclaw_version`, and synced version to 0.15.6.0.
+
+### For contributors
+
+- Golden test fixtures regenerated after multi-host merge.
+- Skill routing rules added to CLAUDE.md.
+
 ## [0.15.6.2] - 2026-04-04 — Anti-Skip Review Rule
 
 Review skills now enforce that every section gets evaluated, regardless of plan type. No more "this is a strategy doc so implementation sections don't apply." If a section genuinely has nothing to flag, say so and move on, but you have to look.
