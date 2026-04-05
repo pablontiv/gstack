@@ -447,6 +447,188 @@ async function sendCommand(state: ServerState, command: string, args: string[], 
   }
 }
 
+// ─── Pair-Agent DX ─────────────────────────────────────────────
+
+interface InstructionBlockOptions {
+  setupKey: string;
+  serverUrl: string;
+  scopes: string[];
+  expiresAt: string;
+}
+
+/** Pure function: generate a copy-pasteable instruction block for a remote agent. */
+export function generateInstructionBlock(opts: InstructionBlockOptions): string {
+  const { setupKey, serverUrl, scopes, expiresAt } = opts;
+  const scopeDesc = scopes.includes('admin')
+    ? 'read + write + admin access (can execute JS, read cookies, access storage)'
+    : 'read + write access (cannot execute JS, read cookies, or access storage)';
+
+  return `\
+${'='.repeat(59)}
+ REMOTE BROWSER ACCESS — paste this into your other agent
+${'='.repeat(59)}
+
+You have access to a remote browser controlled via HTTP API.
+This setup key expires in 5 minutes.
+
+STEP 1 — Exchange the setup key for a session token:
+
+  curl -s -X POST \\
+    -H "Content-Type: application/json" \\
+    -d '{"setup_key": "${setupKey}"}' \\
+    ${serverUrl}/connect
+
+  You'll get back: {"token": "gsk_sess_...", "expires": "...", "scopes": [...]}
+  Save that token. Use it for all subsequent requests.
+
+STEP 2 — Create your own tab:
+
+  curl -s -X POST \\
+    -H "Authorization: Bearer <your-session-token>" \\
+    -H "Content-Type: application/json" \\
+    -d '{"command": "newtab", "args": ["https://example.com"]}' \\
+    ${serverUrl}/command
+
+  You'll get back: {"tabId": N, ...}
+  Include "tabId": N in all subsequent commands.
+
+STEP 3 — Use the browser. Send commands as POST /command:
+
+  curl -s -X POST \\
+    -H "Authorization: Bearer <your-session-token>" \\
+    -H "Content-Type: application/json" \\
+    -d '{"command": "snapshot", "args": ["-i"], "tabId": <your-tab-id>}' \\
+    ${serverUrl}/command
+
+AVAILABLE COMMANDS:
+  Navigate:    {"command": "goto", "args": ["URL"], "tabId": N}
+  Read page:   {"command": "snapshot", "args": ["-i"], "tabId": N}
+  Full text:   {"command": "text", "args": [], "tabId": N}
+  Screenshot:  {"command": "screenshot", "args": ["/tmp/screen.png"], "tabId": N}
+  Click:       {"command": "click", "args": ["@e3"], "tabId": N}
+  Fill form:   {"command": "fill", "args": ["@e5", "value"], "tabId": N}
+  Go back:     {"command": "back", "args": [], "tabId": N}
+  List tabs:   {"command": "tabs", "args": []}
+
+SCOPES: This token has ${scopeDesc}.
+${scopes.includes('admin') ? '' : `To request admin access, ask the user to re-run pair-agent with --admin.\n`}
+SESSION: Token expires ${expiresAt}. The user can revoke it
+anytime with: $B tunnel revoke <your-agent-name>
+
+IF SOMETHING GOES WRONG:
+  401 Unauthorized → Token expired or revoked. Ask the user
+    to run pair-agent again.
+  403 Forbidden → Command not in your scope, or tab not owned
+    by you. Use newtab first.
+  429 Too Many Requests → Sending > 10 requests/second.
+    Wait for the Retry-After header.
+
+${'='.repeat(59)}`;
+}
+
+function parseFlag(args: string[], flag: string): string | null {
+  const idx = args.indexOf(flag);
+  if (idx === -1 || idx + 1 >= args.length) return null;
+  return args[idx + 1];
+}
+
+function hasFlag(args: string[], flag: string): boolean {
+  return args.includes(flag);
+}
+
+async function handlePairAgent(state: ServerState, args: string[]): Promise<void> {
+  const clientName = parseFlag(args, '--client') || `remote-${Date.now()}`;
+  const admin = hasFlag(args, '--admin');
+  const localHost = parseFlag(args, '--local');
+
+  // Call POST /pair to create a setup key
+  const pairResp = await fetch(`http://127.0.0.1:${state.port}/pair`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${state.token}`,
+    },
+    body: JSON.stringify({
+      clientId: clientName,
+      admin,
+    }),
+    signal: AbortSignal.timeout(5000),
+  });
+
+  if (!pairResp.ok) {
+    const err = await pairResp.text();
+    console.error(`[browse] Failed to create setup key: ${err}`);
+    process.exit(1);
+  }
+
+  const pairData = await pairResp.json() as {
+    setup_key: string;
+    expires_at: string;
+    scopes: string[];
+    tunnel_url: string | null;
+    server_url: string;
+  };
+
+  // Determine the URL to use
+  let serverUrl: string;
+  if (pairData.tunnel_url) {
+    serverUrl = pairData.tunnel_url;
+  } else {
+    // Check if ngrok is configured but tunnel isn't running
+    const ngrokEnvPath = path.join(process.env.HOME || '/tmp', '.gstack', 'ngrok.env');
+    if (fs.existsSync(ngrokEnvPath) && !localHost) {
+      console.warn('[browse] ngrok is configured but tunnel is not running.');
+      console.warn('[browse] Start the tunnel: BROWSE_TUNNEL=1 $B restart');
+      console.warn('[browse] Using localhost for now (same-machine only).\n');
+    } else if (!localHost) {
+      console.warn('[browse] No tunnel active. Instructions use localhost (same-machine only).\n');
+    }
+    serverUrl = pairData.server_url;
+  }
+
+  // --local HOST: write config file directly, skip instruction block
+  if (localHost) {
+    try {
+      // Resolve host config for the globalRoot path
+      const hostsPath = path.resolve(__dirname, '..', '..', 'hosts', 'index.ts');
+      let globalRoot = `.${localHost}/skills/gstack`;
+      try {
+        const { getHostConfig } = await import(hostsPath);
+        const hostConfig = getHostConfig(localHost);
+        globalRoot = hostConfig.globalRoot;
+      } catch {
+        // Fallback to convention-based path
+      }
+
+      const configDir = path.join(process.env.HOME || '/tmp', globalRoot);
+      fs.mkdirSync(configDir, { recursive: true });
+      const configFile = path.join(configDir, 'browse-remote.json');
+      const configData = {
+        url: serverUrl,
+        setup_key: pairData.setup_key,
+        scopes: pairData.scopes,
+        expires_at: pairData.expires_at,
+      };
+      fs.writeFileSync(configFile, JSON.stringify(configData, null, 2), { mode: 0o600 });
+      console.log(`Connected. ${localHost} can now use the browser.`);
+      console.log(`Config written to: ${configFile}`);
+    } catch (err: any) {
+      console.error(`[browse] Failed to write config for ${localHost}: ${err.message}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Print the instruction block
+  const block = generateInstructionBlock({
+    setupKey: pairData.setup_key,
+    serverUrl,
+    scopes: pairData.scopes,
+    expiresAt: pairData.expires_at || 'in 24 hours',
+  });
+  console.log(block);
+}
+
 // ─── Main ──────────────────────────────────────────────────────
 async function main() {
   const args = process.argv.slice(2);
@@ -678,6 +860,13 @@ Refs:           After 'snapshot', use @e1, @e2... as selectors:
   }
 
   const state = await ensureServer();
+
+  // ─── Pair-Agent (post-server, pre-dispatch) ──────────────
+  if (command === 'pair-agent') {
+    await handlePairAgent(state, commandArgs);
+    process.exit(0);
+  }
+
   await sendCommand(state, command, commandArgs);
 }
 
