@@ -436,6 +436,10 @@ quality gates that produce better results than answering inline.
 - User asks about design system, brand, visual identity → invoke `/design-consultation`
 - User asks to review design of a plan → invoke `/plan-design-review`
 - User wants all reviews done automatically → invoke `/autoplan`
+- User says "implement this", "start feature", "work on this ticket", "autonomous mode" → invoke `/triage`
+- User asks to write specs, define requirements, acceptance criteria, gherkin → invoke `/specify`
+- User asks to implement with TDD, test first, red green refactor → invoke `/tdd`
+- User asks to check drift, compare against spec, "am I on track" → invoke `/drift-check`
 - User reports a bug, error, broken behavior, asks "why is this broken" → invoke `/investigate`
 - User asks to test the site, find bugs, QA → invoke `/qa`
 - User asks to review code, check the diff, pre-landing review → invoke `/review`

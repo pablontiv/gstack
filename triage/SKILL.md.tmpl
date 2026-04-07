@@ -1,0 +1,199 @@
+---
+name: triage
+preamble-tier: 3
+version: 1.0.0
+description: |
+  Complexity triage and pipeline routing for incoming work. Evaluates scope,
+  unknowns, risk, and duration on a 0-4 scale, then routes to the appropriate
+  pipeline depth: Fast (atomic), Standard (medium), or Full (product-scale).
+  Use when asked to "new ticket", "implement this", "start feature", "work on",
+  "autonomous mode", "ticket to feature", or "pick up this task".
+  Proactively invoke this skill (do NOT implement directly) when the user
+  describes new work that needs complexity assessment before jumping into code.
+  If the user reports a bug or error, defer to /investigate instead. (gstack)
+allowed-tools:
+  - Bash
+  - Read
+  - Grep
+  - Glob
+  - AskUserQuestion
+  - Agent
+---
+
+{{PREAMBLE}}
+
+# Complexity Triage
+
+## Purpose
+
+Classify incoming work by complexity. Route to the right pipeline depth.
+Skip unnecessary ceremony for simple changes. Apply full rigor for complex ones.
+
+---
+
+## Step 0: Bug or Feature?
+
+Parse `$ARGUMENTS`. If the user describes a bug, error, broken behavior, or
+"why is this broken":
+
+1. Do NOT triage. Invoke `/investigate` instead.
+2. Say: "This looks like a bug. Routing to /investigate for root cause analysis."
+3. Stop here.
+
+If it is a feature, enhancement, or new work: continue to Step 1.
+
+{{LEARNINGS_SEARCH}}
+
+---
+
+## Step 1: Context Gathering
+
+1. Parse `$ARGUMENTS` for the task description. If no arguments provided, use
+   AskUserQuestion:
+   ```
+   What work do you want to start?
+   Describe the task — what it does, why it matters, any constraints.
+   ```
+
+2. Read CLAUDE.md for project conventions — directory structure, tech stack,
+   domain language, existing patterns:
+   ```bash
+   [ -f "CLAUDE.md" ] && head -100 CLAUDE.md
+   ```
+
+3. Check recent git history for similar past work:
+   ```bash
+   git log --oneline -20
+   ```
+
+4. Estimate how many files and modules the task will touch. Search for code
+   related to the task domain:
+   ```bash
+   # Search for code related to the task domain
+   # Substitute <relevant-terms> with actual keywords from the task description
+   grep -r "<relevant-terms>" --include="*.ts" --include="*.js" --include="*.py" --include="*.rb" --include="*.go" --include="*.rs" -l 2>/dev/null | head -20
+   ```
+
+5. Check if related specs, plans, or feature files already exist:
+   ```bash
+   find . -name '*.feature' -o -name '*.plan.md' 2>/dev/null | grep -v node_modules | grep -v .git | head -10
+   ```
+
+---
+
+## Step 2: Complexity Evaluation
+
+Score each dimension 0-4 based on the context gathered in Step 1:
+
+| Dimension | 0 | 1 | 2 | 3 | 4 |
+|-----------|---|---|---|---|---|
+| **Scope** | 1 file | 2-3 files | 1 module | Multi-module | System-wide |
+| **Unknowns** | None | Minor | Some research needed | Significant gaps | Fundamental uncertainty |
+| **Risk** | Trivial | Low | Medium | High | Critical (data loss, security) |
+| **Duration** | <30min | Hours | 1 day | Days | Week+ |
+
+**Level = max(scores)** -- conservative: the highest dimension wins.
+
+Present the evaluation:
+
+```
+COMPLEXITY TRIAGE
+=================
+Task: [description]
+
+  Scope:    N/4 -- [reasoning]
+  Unknowns: N/4 -- [reasoning]
+  Risk:     N/4 -- [reasoning]
+  Duration: N/4 -- [reasoning]
+
+  LEVEL: N ([atomic|medium|product-scale])
+  PIPELINE: [Fast|Standard|Full]
+```
+
+---
+
+## Step 3: User Confirmation
+
+Use AskUserQuestion to present the classification and let the user override:
+
+```
+Classified as Level N ([PIPELINE] pipeline).
+
+A) Agree -- proceed with [pipeline description]
+B) Override to lighter -- use a simpler pipeline
+C) Override to heavier -- use a more rigorous pipeline
+```
+
+If the user chooses B or C, adjust the pipeline accordingly:
+- B with Level 2 -> use Fast pipeline (Level 0-1)
+- B with Level 3-4 -> use Standard pipeline (Level 2)
+- C with Level 0-1 -> use Standard pipeline (Level 2)
+- C with Level 2 -> use Full pipeline (Level 3-4)
+
+---
+
+## Step 4: Pipeline Execution
+
+Based on the confirmed level, invoke the first skill in the pipeline chain.
+Each skill is invoked sequentially as the previous one completes.
+
+### Atomic (Level 0-1) -- Fast Pipeline
+
+Minimal ceremony. Straight to implementation.
+
+1. Invoke `/specify` with the task description
+2. Then `/tdd` to implement with tests
+3. Then `/drift-check` to verify alignment with spec
+4. Then `/review` for code quality (skip Phase A spec-compliance gate -- the
+   task is too small for formal spec compliance)
+5. Then `/ship`
+
+### Medium (Level 2) -- Standard Pipeline
+
+Full quality checks, no upfront design phase.
+
+1. Invoke `/specify` with the task description
+2. Then `/tdd` to implement with tests
+3. Then `/drift-check` to verify alignment with spec
+4. Then `/review` (full -- all phases)
+5. Then `/ship`
+
+### Product-Scale (Level 3-4) -- Full Pipeline
+
+Maximum rigor. Requirements discussion, plan review, phased implementation.
+
+1. Invoke `/office-hours` for requirements discussion and design thinking
+2. Then `/specify` for detailed Gherkin specs
+3. Then `/autoplan` for automated plan review pipeline
+4. Then `/tdd` per sprint or task from the plan
+5. Then `/drift-check` after implementation is complete
+6. Then `/review` (full + specialist reviewers)
+7. Then `/ship`
+8. Then `/canary` for post-deploy monitoring
+
+### Escalation and De-escalation
+
+During execution, if complexity turns out different than expected:
+
+1. If higher than expected (e.g., discovering cross-module dependencies,
+   fundamental unknowns, or data migration needs): surface via AskUserQuestion
+   and offer to escalate to a heavier pipeline.
+2. If simpler than expected (e.g., the change is a one-liner, no edge cases):
+   offer to skip remaining ceremony and fast-track to `/ship`.
+
+---
+
+{{LEARNINGS_LOG}}
+
+## Important Rules
+
+- **ALWAYS defer bugs and errors to /investigate.** Triage is for new work only.
+- **Present the evaluation transparently.** Show reasoning per dimension so the
+  user can judge whether the classification is right.
+- **User can always override.** Triage suggests, user decides.
+- **Invoke skills via the Skill tool**, not by pasting their content.
+- **Each skill in the pipeline is invoked sequentially** as the previous one
+  completes. Do not run pipeline steps in parallel.
+- **If $ARGUMENTS is empty, ask.** Never guess what the user wants to build.
+- **Platform-agnostic.** Do not hardcode framework-specific commands or paths.
+  Read CLAUDE.md for project conventions.

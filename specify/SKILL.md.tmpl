@@ -1,0 +1,214 @@
+---
+name: specify
+preamble-tier: 3
+version: 1.0.0
+description: |
+  Convert requirements into Gherkin BDD specs and a derived plan file. Analyzes
+  the codebase for context, generates prioritized scenarios (P1/P2/P3), flags
+  ambiguities for clarification, and produces an actionable implementation plan.
+  Use when asked to "specify", "write spec", "gherkin", "acceptance criteria",
+  "requirements", "define feature", or "what should this do".
+  Proactively suggest when the user describes a feature in vague terms and needs
+  structured acceptance criteria before implementation begins. (gstack)
+allowed-tools:
+  - Bash
+  - Read
+  - Write
+  - Edit
+  - Grep
+  - Glob
+  - AskUserQuestion
+---
+
+{{PREAMBLE}}
+
+# Specification Engine
+
+Convert natural language requirements into executable Gherkin BDD specs with a derived
+plan file. Specs drive implementation — never the other way around.
+
+**HARD GATE:** Do NOT write implementation code. This skill produces specs and plans only.
+
+---
+
+## Step 0: Context Gathering
+
+1. Parse `$ARGUMENTS` for the requirement description.
+2. If no arguments provided, use AskUserQuestion:
+   ```
+   What feature or behavior do you want to specify?
+   Describe it in plain language — who needs it, what it does, why it matters.
+   ```
+3. Read CLAUDE.md for project conventions — test framework, directory structure, domain language, existing patterns.
+4. Search for existing `.feature` files to match style and conventions:
+   ```bash
+   find . -name '*.feature' -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null | head -20
+   ```
+5. If existing `.feature` files are found, read one to extract the project's Gherkin style (indentation, tag conventions, language).
+
+{{LEARNINGS_SEARCH}}
+
+---
+
+## Step 1: Requirements Analysis
+
+Break the requirement into structured components:
+
+1. **Actors/Roles** — who interacts with this feature? (e.g., "authenticated user", "admin", "API consumer")
+2. **Actions** — what can each actor do? List every verb.
+3. **Expected Outcomes** — what should happen for each action? Include both success and failure.
+4. **Preconditions** — what must be true before the feature works?
+5. **Boundary conditions** — what are the limits? (max length, empty input, concurrent access, permissions)
+
+Categorize each scenario by priority:
+- **P1 (must)** — Core happy path and critical error handling. The feature is broken without these.
+- **P2 (should)** — Edge cases, secondary flows, non-critical validation. Expected for production quality.
+- **P3 (could)** — Nice-to-haves, cosmetic behavior, advanced scenarios. Defer without guilt.
+
+If the requirement is too vague to produce even one P1 scenario, use AskUserQuestion before generating anything:
+```
+The requirement is too vague for concrete scenarios. I need clarity on:
+1. [specific question]
+2. [specific question]
+```
+
+---
+
+## Step 2: Gherkin Generation
+
+Determine the domain from the requirement and codebase context. Create the feature file at:
+```
+specs/features/<domain>/<FeatureName>.feature
+```
+
+If a `specs/features/` directory does not exist, create it. If the project already has a different convention for feature files (detected in Step 0), use that location instead.
+
+Write the feature file using this structure:
+
+```gherkin
+@draft
+Feature: [User Story format — concise, one line]
+  As a [Role]
+  I want [Action]
+  So that [Benefit]
+
+  # --- P1: Must Have ---
+
+  @P1
+  Scenario: [Happy path — descriptive name]
+    Given [precondition]
+    When [action]
+    Then [expected outcome]
+
+  @P1
+  Scenario: [Critical error case — descriptive name]
+    Given [precondition]
+    When [invalid action]
+    Then [error handling]
+
+  # --- P2: Should Have ---
+
+  @P2
+  Scenario: [Edge case — descriptive name]
+    Given [boundary precondition]
+    When [edge action]
+    Then [expected behavior]
+
+  # --- P3: Could Have ---
+
+  @P3
+  Scenario: [Nice-to-have — descriptive name]
+    Given [precondition]
+    When [advanced action]
+    Then [enhanced behavior]
+```
+
+Rules for scenario quality:
+- Each scenario must be **atomic** — tests exactly one behavior, independently verifiable.
+- Scenarios must be **technology-agnostic** — describe behavior, not implementation. Say "the user sees an error message" not "a 422 response is returned with JSON body".
+- Use **concrete examples** in Given/When/Then, not abstract placeholders. Say `Given a user with email "alice@example.com"` not `Given a user with valid email`.
+- Mark any ambiguity inline with `[NEEDS CLARIFICATION: <question>]` in a comment above the affected scenario.
+
+---
+
+## Step 3: Ambiguity Resolution
+
+After generating the feature file, check if any `[NEEDS CLARIFICATION]` markers exist.
+
+1. If markers exist, present each ambiguity to the user one at a time via AskUserQuestion:
+   ```
+   Ambiguity in scenario "[Scenario Name]":
+   [The specific question]
+
+   Options:
+   A) [option]
+   B) [option]
+   C) Something else — please describe
+   ```
+2. After each answer, update the feature file — replace the `[NEEDS CLARIFICATION]` comment with the resolved scenario.
+3. Once ALL ambiguities are resolved, change the feature tag from `@draft` to `@ready`.
+4. If no ambiguities were found, change `@draft` to `@ready` immediately.
+
+---
+
+## Step 4: Plan Generation
+
+Create a gstack-compatible plan file derived from the spec. Save it alongside the feature file:
+```
+specs/features/<domain>/<FeatureName>.plan.md
+```
+
+Format:
+
+```markdown
+# Plan: [Feature Name]
+
+## Source
+specs/features/<domain>/<FeatureName>.feature
+
+## P1 — Must Have
+- [ ] Scenario: [name] — [one-line description of what to implement]
+- [ ] Scenario: [name] — [one-line description of what to implement]
+
+## P2 — Should Have
+- [ ] Scenario: [name] — [one-line description of what to implement]
+
+## P3 — Could Have (deferred)
+- [ ] Scenario: [name] — [one-line description of what to implement]
+```
+
+Each checkbox item must map 1:1 to a scenario in the feature file. P3 items are listed but marked as deferred — they are not blockers.
+
+---
+
+## Step 5: Summary
+
+Output a structured report:
+
+```
+SPECIFICATION REPORT
+════════════════════════════════════════
+Feature:    [feature name]
+Spec:       [path to .feature file]
+Plan:       [path to .plan.md file]
+Scenarios:  [N] total — [P1 count] P1, [P2 count] P2, [P3 count] P3
+Status:     @ready | @draft (if unresolved ambiguities remain)
+Result:     DONE | DONE_WITH_CONCERNS
+════════════════════════════════════════
+```
+
+- **DONE** — all scenarios written, no ambiguities, plan generated.
+- **DONE_WITH_CONCERNS** — P3 scenarios deferred or minor ambiguities the user chose to skip.
+
+{{LEARNINGS_LOG}}
+
+---
+
+## Important Rules
+
+- **NEVER write implementation code.** This skill produces specs and plans only.
+- **If the requirement is too vague for scenarios, AskUserQuestion before generating.** Do not invent requirements.
+- **Each scenario must be atomic and independently testable.** One behavior per scenario.
+- **Scenarios must be technology-agnostic.** Describe behavior, not implementation details.
+- **If existing `.feature` files exist, match their style and conventions.** Consistency over preference.
+- **One AskUserQuestion at a time.** Never batch multiple clarification questions.

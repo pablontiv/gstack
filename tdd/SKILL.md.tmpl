@@ -1,0 +1,313 @@
+---
+name: tdd
+preamble-tier: 4
+version: 1.0.0
+description: |
+  Test-Driven Development with Iron Law enforcement. Strict RED-GREEN-REFACTOR
+  cycle: write a failing test first, make it pass with minimal code, then refactor.
+  No production code without a failing test. Reads Gherkin .feature files from
+  /specify or works from user descriptions. Use when asked to "write tests",
+  "TDD", "red green refactor", "test first", "implement feature",
+  "implement with tests", or "build this with tests".
+  Proactively invoke when the user asks to implement a feature and a .feature
+  file exists in specs/features/, or when they say "build this" and tests
+  should drive the design. (gstack)
+benefits-from: [investigate]
+allowed-tools:
+  - Bash
+  - Read
+  - Write
+  - Edit
+  - Grep
+  - Glob
+  - AskUserQuestion
+---
+
+{{PREAMBLE}}
+
+# Test-Driven Development
+
+## Iron Law
+
+**NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST.**
+
+This is not a guideline. This is not a suggestion. This is an invariant. Every line
+of production code exists because a test demanded it. If you catch yourself writing
+production code before a failing test, STOP, delete the production code, and start
+over with the test.
+
+Why: code without a failing test is untested by definition. "I'll add tests after"
+means "I'll verify my assumptions using the same brain that made those assumptions."
+Tests written after the fact test what the code does, not what it should do. TDD
+forces you to specify the behavior before implementing it.
+
+---
+
+## Step 0: Setup
+
+Parse `$ARGUMENTS` for the feature or behavior to implement.
+
+**Read project conventions:**
+
+```bash
+[ -f "CLAUDE.md" ] && head -100 CLAUDE.md
+```
+
+Look for: test commands, test file naming conventions, test directory structure,
+preferred assertion libraries. If CLAUDE.md specifies a test command, use that
+for ALL test runs throughout this session.
+
+**Auto-detect test framework (only if CLAUDE.md does not specify):**
+
+```bash
+[ -f "go.mod" ] && echo "FRAMEWORK: go test ./..."
+[ -f "Cargo.toml" ] && echo "FRAMEWORK: cargo test"
+[ -f "pyproject.toml" ] && echo "FRAMEWORK: pytest"
+[ -f "mix.exs" ] && echo "FRAMEWORK: mix test"
+[ -f "build.gradle" ] || [ -f "build.gradle.kts" ] && echo "FRAMEWORK: gradle test"
+[ -f "pom.xml" ] && echo "FRAMEWORK: mvn test"
+[ -f "Gemfile" ] && echo "FRAMEWORK: bundle exec rspec"
+[ -f "deno.json" ] || [ -f "deno.jsonc" ] && echo "FRAMEWORK: deno test"
+```
+
+```bash
+[ -f "package.json" ] && cat package.json | grep -E '"(jest|vitest|mocha|ava|tap|bun)"|"test"' || true
+```
+
+If no framework is detected and no test command exists in CLAUDE.md, use
+AskUserQuestion: "No test framework detected. What command runs your tests?
+(e.g., `go test ./...`, `bun test`, `pytest`)"
+
+Remember the detected test command as TEST_CMD for the rest of this session.
+Reference it in prose as "the test command detected in Step 0."
+
+**Check for existing test patterns:**
+
+```bash
+find . -name "*test*" -o -name "*spec*" | head -20
+```
+
+Read 1-2 existing test files to match the project's style: file naming, imports,
+assertion style, describe/it nesting, setup/teardown patterns. The tests you write
+must look like they belong in this codebase.
+
+{{LEARNINGS_SEARCH}}
+
+---
+
+## Step 1: Identify Test Cases
+
+**Check for Gherkin feature files first:**
+
+```bash
+ls specs/features/*.feature 2>/dev/null || ls features/*.feature 2>/dev/null || ls spec/features/*.feature 2>/dev/null || echo "NO_FEATURE_FILES"
+```
+
+1. If `.feature` files exist: read the Gherkin scenarios. Each `Scenario:` or
+   `Scenario Outline:` becomes one test case. Extract the behavior described in
+   the Given/When/Then steps. Preserve the scenario names for test descriptions.
+
+2. If no `.feature` file exists: decompose the user's requirement into individual
+   behaviors. Each behavior is one testable unit. Think about:
+   - Happy path (the main success scenario)
+   - Edge cases (empty input, boundary values, null/nil)
+   - Error cases (invalid input, missing dependencies, network failures)
+   - State transitions (before/after, side effects)
+
+3. Present the test plan to the user via AskUserQuestion:
+
+   ```
+   TEST PLAN
+   ════════════════════════════════════════
+   Source: [.feature file path | user description]
+
+   Test cases (in implementation order):
+   1. [behavior description] — [why this matters]
+   2. [behavior description] — [why this matters]
+   3. ...
+
+   Total: N test cases
+   ════════════════════════════════════════
+
+   Proceed with this plan?
+   A) Yes, start the RED-GREEN-REFACTOR cycles
+   B) Modify — I want to add/remove/reorder test cases
+   C) Abort
+   ```
+
+---
+
+## Step 2: RED -- Write a Failing Test
+
+For the current test case:
+
+1. Write ONE test that describes the expected behavior. The test name should read
+   like a specification: "returns empty list when no items match filter", not
+   "test filter" or "test1".
+
+2. Run it with the test command detected in Step 0:
+
+   ```bash
+   # Run just the new test file (faster feedback)
+   <test-command> <test-file>
+   ```
+
+3. **Verify the test FAILS.** This is the RED in RED-GREEN-REFACTOR.
+
+4. **Verify it fails for the RIGHT REASON.** The failure must be about the missing
+   behavior, not about:
+   - Syntax errors in the test itself
+   - Missing imports or unresolved modules
+   - Wrong file path or test configuration
+   - Compilation errors in the test
+
+   If the failure is a test infrastructure issue, fix the test setup first
+   until the test fails because the production behavior does not exist yet.
+
+5. If the test PASSES without writing any production code: the behavior already
+   exists. Log this: "SKIP: [test case] — behavior already implemented." Move to
+   the next test case in Step 5.
+
+---
+
+## Step 3: GREEN -- Minimal Implementation
+
+1. Write the MINIMUM code to make the failing test pass. This means:
+   - No extra methods "we'll need later"
+   - No abstractions "for future flexibility"
+   - No handling of cases not yet tested
+   - Hardcoding a return value is acceptable if only one test exists for that path
+
+2. Run the failing test again:
+
+   ```bash
+   <test-command> <test-file>
+   ```
+
+   Verify it passes. If it still fails, read the error carefully and fix the
+   production code. Do NOT modify the test to make it pass — the test defines the
+   correct behavior.
+
+3. Run ALL tests to catch regressions:
+
+   ```bash
+   <test-command>
+   ```
+
+   If any other test breaks, the new code introduced a regression. Fix it before
+   proceeding. The fix must not break the new test.
+
+---
+
+## Step 4: REFACTOR
+
+Now that all tests pass, clean up both test and production code:
+
+1. Look for:
+   - Duplicated code that can be extracted
+   - Names that don't communicate intent
+   - Functions that do too many things
+   - Test setup that can be shared via helpers or fixtures
+
+2. Make ONE refactoring change at a time. After each change, run ALL tests:
+
+   ```bash
+   <test-command>
+   ```
+
+3. If tests fail after a refactoring step: undo that specific change immediately.
+   The refactoring was not behavior-preserving. Try a smaller, safer refactoring
+   instead.
+
+4. Refactoring is optional per cycle. If the code is already clean after GREEN,
+   move on. Do not refactor for the sake of refactoring.
+
+---
+
+## Step 5: Next Cycle
+
+Move to the next test case from the plan in Step 1. Return to Step 2.
+
+Repeat Steps 2-4 for each test case. After each cycle, briefly note the status:
+
+```
+CYCLE N: [test case description]
+  RED:      test fails (correct reason: [reason])
+  GREEN:    test passes, all tests pass
+  REFACTOR: [what was cleaned up, or "no refactoring needed"]
+```
+
+After ALL test cases are complete, run the full test suite one final time:
+
+```bash
+<test-command>
+```
+
+All tests must pass. If any fail, debug and fix before proceeding to completion.
+
+---
+
+## Rationalization Detection
+
+STOP IMMEDIATELY if you catch yourself thinking any of these:
+
+| Thought | Reality |
+|---------|---------|
+| "Let me just write the code first, I'll add tests after" | That is not TDD. Write the test first. |
+| "This is too simple to need a test" | Simple code still breaks. Write the test. |
+| "I know this works, the test is just a formality" | Then the test will pass quickly. Write it first. |
+| "Let me scaffold the structure first" | Structure emerges from tests. Start with the test. |
+| "I'll write multiple tests at once to save time" | One test at a time. Focus. |
+| "The test framework isn't set up" | Setting it up IS your first task. Do it. |
+| "Let me refactor before writing the next test" | Refactoring happens in Step 4, after GREEN. |
+| "This edge case is obvious, I'll just handle it" | If it is obvious, the test will be trivial to write. Write it. |
+
+**If you wrote production code before a failing test:** DELETE the production code.
+Return to Step 2 and write the test first. No exceptions.
+
+---
+
+## Completion
+
+After all cycles are complete and the full test suite passes, output a structured report:
+
+```
+TDD REPORT
+════════════════════════════════════════
+Feature:     [what was implemented]
+Source:      [.feature file path, or "user description"]
+Tests:       N written, N passing, N skipped (already existed)
+Cycles:      N RED-GREEN-REFACTOR cycles completed
+Test files:  [list of test files created/modified]
+Source files:[list of production files created/modified]
+Status:      DONE | DONE_WITH_CONCERNS | BLOCKED
+════════════════════════════════════════
+```
+
+**Status definitions:**
+- **DONE:** All test cases implemented, all tests pass, code is clean.
+- **DONE_WITH_CONCERNS:** All tests pass but something warrants attention (e.g., a test
+  was hard to write suggesting a design issue, or an edge case was deferred).
+- **BLOCKED:** Cannot proceed. Test framework issue, unclear requirements, or a
+  dependency is missing. Explain what is blocking and what the user needs to do.
+
+{{LEARNINGS_LOG}}
+
+---
+
+## Important Rules
+
+1. **ONE test at a time.** Never write multiple tests before making them pass.
+2. **The test MUST fail before you write production code.** No exceptions.
+3. **Run ALL tests after every GREEN and every REFACTOR step.** Regressions hide.
+4. **If a test is hard to write, the design needs to change.** That is valuable
+   feedback, not an obstacle. Difficulty writing a test means the code is too
+   coupled, has hidden dependencies, or the interface is wrong.
+5. **Minimal GREEN.** Write the least code to pass. Resist the urge to "finish"
+   the implementation. The next test will drive the next increment.
+6. **benefits-from: investigate.** If a test failure is mysterious or the root cause
+   is unclear, invoke `/investigate` to systematically debug it before guessing.
+7. **Match project style.** Test file names, assertion patterns, describe/it nesting,
+   and setup/teardown must match what already exists in the codebase.
+8. **Do not modify existing tests** unless the requirement explicitly changes their
+   expected behavior. Existing tests are a safety net, not an obstacle.

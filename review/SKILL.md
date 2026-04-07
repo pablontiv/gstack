@@ -606,6 +606,10 @@ You are running the `/review` workflow. Analyze the current branch's diff agains
 
 ---
 
+## Phase A: Spec Compliance
+
+Check whether the implementation matches what was planned/specified.
+
 ## Step 1.5: Scope Drift Detection
 
 Before reviewing code quality, check: **did they build what was requested — nothing more, nothing less?**
@@ -814,6 +818,26 @@ Plan items: N DONE, M PARTIAL, K NOT DONE
 
 **No plan file found:** Use commit messages and TODOS.md as fallback sources (see above). If no intent sources at all, skip with: "No intent sources detected — skipping completion audit."
 
+### Phase A Gate
+
+If a plan or spec was found above:
+
+1. Count the actionable items classified as DONE vs total items.
+2. If completion is below 60% (more than 40% NOT DONE): use AskUserQuestion:
+   ```
+   Spec compliance is low (NN% complete). Reviewing code quality on incomplete
+   work may be wasted effort.
+   A) Continue review anyway — I want feedback on what's done so far
+   B) Stop review — I'll implement the missing items first
+   ```
+3. If the user chooses B, stop the review and output: "Review paused. Implement missing items, then re-run `/review`."
+
+If no plan or spec was found, skip the gate and proceed to Phase B.
+
+---
+
+## Phase B: Code Quality
+
 ## Step 2: Read the checklist
 
 Read `.claude/skills/review/checklist.md`.
@@ -926,6 +950,8 @@ too low. Log the corrected pattern as a learning so future reviews catch it with
 higher confidence.
 
 ---
+
+## Phase C: Specialist Review
 
 ## Step 4.5: Review Army — Specialist Dispatch
 
@@ -1457,6 +1483,27 @@ staleness detection: if those files are later deleted, the learning can be flagg
 already knows. A good test: would this insight save time in a future session? If yes, log it.
 
 If the review exits early before a real review completes (for example, no diff against the base branch), do **not** write this entry.
+
+## Combined Verdict
+
+After all phases complete, output:
+
+```
+PRE-LANDING REVIEW — [branch]
+════════════════════════════════════════
+Phase A (Spec Compliance): PASS | NEEDS WORK | SKIPPED (no spec)
+Phase B (Code Quality):    N critical, M informational
+Phase C (Specialists):     [dispatched specialists and findings]
+
+VERDICT: READY | NEEDS WORK | BLOCKED
+════════════════════════════════════════
+```
+
+- READY: Phase A passed (or skipped), zero unresolved critical findings
+- NEEDS WORK: unresolved findings or low spec compliance
+- BLOCKED: critical issues that prevent merge
+
+---
 
 ## Important Rules
 

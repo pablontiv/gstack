@@ -1,0 +1,281 @@
+---
+name: drift-check
+preamble-tier: 4
+version: 1.0.0
+description: |
+  Standalone spec-vs-implementation drift detection. Compares the original spec
+  or plan against what was actually built, classifying each item as DONE, PARTIAL,
+  NOT DONE, CHANGED, or SCOPE CREEP. Computes a drift score (0-100) and flags
+  significant divergence before review. Use when asked to "check drift",
+  "compare against spec", "am I on track", "spec compliance",
+  "did I build what was planned", or "drift detection".
+  Proactively suggest at phase transitions — after implementation and before
+  review — to catch divergence early. (gstack)
+allowed-tools:
+  - Bash
+  - Read
+  - Grep
+  - Glob
+  - AskUserQuestion
+---
+
+{{PREAMBLE}}
+
+{{BASE_BRANCH_DETECT}}
+
+# Drift Detection
+
+Compare spec/plan against implementation. Catch divergence before review.
+
+**HARD GATE:** This skill is READ-ONLY. It never modifies code, specs, or plans.
+
+---
+
+## Step 1: Locate Source of Truth
+
+Search for the spec or plan that defines what should have been built. Check in
+this order — stop at the first hit.
+
+### 1a: Gherkin specs (highest priority)
+
+```bash
+find . -path '*/specs/features/*.feature' -o -path '*/features/*.feature' 2>/dev/null | grep -v node_modules | grep -v .git | head -20
+```
+
+If `.feature` files are found, use them as the source of truth. If multiple files
+exist, present them via AskUserQuestion and let the user pick, or use all if the
+user confirms.
+
+### 1b: Plan files (standard gstack locations)
+
+```bash
+setopt +o nomatch 2>/dev/null || true
+BRANCH=$(git branch --show-current 2>/dev/null | tr '/' '-')
+REPO=$(basename "$(git rev-parse --show-toplevel 2>/dev/null)")
+_SLUG=$(git remote get-url origin 2>/dev/null | sed 's|.*[:/]\([^/]*/[^/]*\)\.git$|\1|;s|.*[:/]\([^/]*/[^/]*\)$|\1|' | tr '/' '-' | tr -cd 'a-zA-Z0-9._-') || true
+_SLUG="${_SLUG:-$(basename "$PWD" | tr -cd 'a-zA-Z0-9._-')}"
+echo "=== Checking plan locations ==="
+for PLAN_DIR in "$HOME/.gstack/projects/$_SLUG" "$HOME/.claude/plans" "$HOME/.codex/plans" ".gstack/plans"; do
+  [ -d "$PLAN_DIR" ] || continue
+  PLAN=$(ls -t "$PLAN_DIR"/*.md 2>/dev/null | xargs grep -l "$BRANCH" 2>/dev/null | head -1)
+  [ -z "$PLAN" ] && PLAN=$(ls -t "$PLAN_DIR"/*.md 2>/dev/null | xargs grep -l "$REPO" 2>/dev/null | head -1)
+  [ -z "$PLAN" ] && PLAN=$(find "$PLAN_DIR" -name '*.md' -mmin -1440 -maxdepth 1 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
+  [ -n "$PLAN" ] && break
+done
+[ -n "$PLAN" ] && echo "PLAN_FILE: $PLAN" || echo "NO_PLAN_FILE"
+```
+
+If a plan file is found, read the first 20 lines to verify it is relevant to the
+current branch's work. If it belongs to a different project or feature, treat it
+as not found.
+
+### 1c: No source of truth found
+
+If neither Gherkin specs nor plan files are found, use AskUserQuestion:
+
+```
+No spec or plan file found for this branch.
+
+A) Provide a file path — I have a spec/plan somewhere else
+B) Describe what was planned — I'll work from your description
+C) Cancel — nothing to check against
+```
+
+If the user chooses C, output: **"DRIFT CHECK: BLOCKED -- no source of truth available."** and stop.
+
+---
+
+{{LEARNINGS_SEARCH}}
+
+## Step 2: Extract Actionable Items
+
+Read the source of truth found in Step 1. Extract every item that represents
+work to be done.
+
+**If Gherkin spec:** Each `Scenario:` line is one actionable item. Include the
+scenario name and a brief summary of what it tests (from the Given/When/Then
+steps). Respect priority tags -- `@P1` items are weighted higher than `@P2`/`@P3`.
+
+**If plan file:** Extract actionable items using these patterns:
+- Checkbox items: `- [ ] ...` or `- [x] ...`
+- Numbered steps under implementation headings: "1. Create ...", "2. Add ..."
+- Imperative statements: "Add X to Y", "Create a Z service"
+- File-level specifications: "New file: path/to/file.ts"
+- Test requirements: "Test that X", "Add test for Y"
+
+**If user description:** Break the prose into discrete requirements. Each
+requirement statement is one actionable item.
+
+**Ignore:**
+- Context/Background sections
+- Questions and open items (marked with ?, "TBD", "TODO: decide")
+- Explicitly deferred items ("Future:", "Out of scope:", "P3:" if tagged as deferred)
+
+**Cap:** Extract at most 50 items. If there are more, note: "Showing top 50 of N
+items -- full list in source file."
+
+List all extracted items numbered, with their source line or scenario name.
+
+---
+
+## Step 3: Analyze Implementation
+
+Determine what was actually built on this branch.
+
+```bash
+echo "=== Current branch ==="
+git branch --show-current
+echo "=== Commits on this branch ==="
+git log --oneline origin/<base>..HEAD 2>/dev/null | head -30
+```
+
+```bash
+echo "=== Files changed ==="
+git diff origin/<base>...HEAD --stat 2>/dev/null
+```
+
+```bash
+echo "=== Diff summary ==="
+git diff origin/<base>...HEAD --shortstat 2>/dev/null
+```
+
+Read the changed files to understand what was implemented. Focus on the substance
+of each change -- what behavior was added, modified, or removed. Use Grep to trace
+specific features across the codebase when the diff alone is insufficient.
+
+---
+
+## Step 4: Classify Each Item
+
+For each actionable item from Step 2, compare against the implementation from
+Step 3 and classify:
+
+| Status | Meaning | Evidence required |
+|--------|---------|-------------------|
+| DONE | Fully implemented as specified | Cite specific file(s) and behavior |
+| PARTIAL | Started but incomplete | Cite what exists and what is missing |
+| NOT DONE | No implementation found | Confirmed absent from diff and codebase |
+| CHANGED | Implemented differently than specified | Cite how the approach diverged |
+| SCOPE CREEP | In the diff but NOT in the spec | Cite the unplanned change |
+
+Classification rules:
+- **Be conservative with DONE** -- require clear evidence in the diff. A file being
+  touched is not enough; the specific functionality described must be present.
+- **Be generous with CHANGED** -- if the goal is met by different means, that counts
+  as addressed. Note the divergence but do not penalize.
+- **SCOPE CREEP is neutral** -- flag it but do not judge. Sometimes the best changes
+  emerge during implementation.
+- For CHANGED items, note whether the divergence is **cosmetic** (naming, structure)
+  or **architectural** (different approach, different data flow).
+
+---
+
+## Step 5: Compute Drift Score
+
+Count each classification:
+
+```
+DONE_COUNT       = number of DONE items
+PARTIAL_COUNT    = number of PARTIAL items
+NOT_DONE_COUNT   = number of NOT DONE items
+CHANGED_COUNT    = number of CHANGED items
+CREEP_COUNT      = number of SCOPE CREEP items
+TOTAL_SPEC_ITEMS = DONE + PARTIAL + NOT_DONE + CHANGED
+```
+
+Compute the drift score:
+
+```
+raw_score = (NOT_DONE * 25) + (PARTIAL * 15) + (CHANGED * 10) + (CREEP * 5)
+drift_score = min(raw_score * 100 / (TOTAL_SPEC_ITEMS * 25), 100)
+```
+
+If `TOTAL_SPEC_ITEMS` is zero (only scope creep, no spec items), set drift score
+to the number of SCOPE CREEP items multiplied by 5, capped at 100.
+
+Severity bands:
+
+| Score | Level | Meaning |
+|-------|-------|---------|
+| 0-10 | LOW | On track. Minor deviations at most. |
+| 11-30 | MEDIUM | Some drift, generally acceptable. |
+| 31-60 | HIGH | Significant drift. Review recommended before proceeding. |
+| 61-100 | CRITICAL | Implementation does not match spec. Realignment needed. |
+
+---
+
+## Step 6: Report
+
+Output the drift report in this format:
+
+```
+DRIFT CHECK -- [branch] vs [source file(s)]
+════════════════════════════════════════════════════
+
+Spec items: N total
+  DONE: X | PARTIAL: Y | NOT DONE: Z | CHANGED: W
+
+Scope creep: V items not in spec
+
+DRIFT SCORE: NN/100 (LOW/MEDIUM/HIGH/CRITICAL)
+
+Per-item detail:
+──────────────────────────────────────────────────
+  [item] -- DONE
+  [item] -- PARTIAL: [what is missing]
+  [item] -- NOT DONE
+  [item] -- CHANGED: [how it differs]
++ [item] -- SCOPE CREEP: [what was added]
+──────────────────────────────────────────────────
+```
+
+Use these markers for each item:
+- `DONE` for completed items
+- `PARTIAL` for partially completed items
+- `NOT DONE` for missing items
+- `CHANGED` for items implemented differently
+- `+` prefix for scope creep items
+
+---
+
+## Step 7: Action (if drift > 30)
+
+If the drift score is 31 or higher, use AskUserQuestion:
+
+```
+Drift score is NN/100 (HIGH/CRITICAL).
+
+A) Update spec to match implementation -- the code is correct, spec is outdated
+B) Align implementation to spec -- the spec is correct, need to fix the code
+C) Acknowledge and continue -- drift is intentional, proceed as-is
+```
+
+1. If the user chooses A: Note that the spec should be updated. Output which items
+   need spec changes. This skill does not modify files -- the user or `/specify`
+   handles the update.
+2. If the user chooses B: List the items that need implementation work, in priority
+   order (NOT DONE first, then PARTIAL, then CHANGED). This skill does not modify
+   files -- the user handles implementation.
+3. If the user chooses C: Acknowledge and mark the drift as intentional.
+
+If the drift score is 30 or below, skip the question. Output:
+**"Drift is within acceptable range. No action needed."**
+
+---
+
+{{LEARNINGS_LOG}}
+
+## Important Rules
+
+- **READ-ONLY.** This skill never modifies code, specs, or plans. It observes and reports.
+- **Use the base branch detected in Step 0** for all git diff and git log commands.
+  Substitute `<base>` with the detected branch name.
+- **If no spec/plan exists, this skill cannot run.** Ask the user via AskUserQuestion
+  (Step 1c). If they cancel, stop gracefully.
+- **SCOPE CREEP is not always bad.** Flag it neutrally. Good changes emerge during
+  implementation. The report informs; the user decides.
+- **Be conservative with DONE, generous with CHANGED.** Require evidence for completion
+  claims. Accept alternative approaches that achieve the same goal.
+- **Completion status:**
+  - DONE -- report generated successfully
+  - BLOCKED -- no spec or plan found, user cancelled
