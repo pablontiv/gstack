@@ -76,8 +76,14 @@ fi
 
   # ── Pull latest ──
   OLD_HEAD=$(git -C "$GSTACK_DIR" rev-parse HEAD 2>/dev/null)
-  git -C "$GSTACK_DIR" pull --ff-only -q 2>/dev/null
-  PULL_EXIT=$?
+  if git -C "$GSTACK_DIR" remote 2>/dev/null | grep -q '^upstream$'; then
+    git -C "$GSTACK_DIR" fetch upstream -q 2>/dev/null
+    git -C "$GSTACK_DIR" rebase upstream/main -q 2>/dev/null
+    PULL_EXIT=$?
+  else
+    git -C "$GSTACK_DIR" pull --ff-only -q 2>/dev/null
+    PULL_EXIT=$?
+  fi
   NEW_HEAD=$(git -C "$GSTACK_DIR" rev-parse HEAD 2>/dev/null)
 
   # Record check time regardless of outcome

@@ -122,8 +122,13 @@ Use the install type and directory detected in Step 2:
 ```bash
 cd "$INSTALL_DIR"
 STASH_OUTPUT=$(git stash 2>&1)
-git fetch origin
-git reset --hard origin/main
+if git remote | grep -q '^upstream$'; then
+  git fetch upstream
+  git rebase upstream/main
+else
+  git fetch origin
+  git reset --hard origin/main
+fi
 ./setup
 ```
 If `$STASH_OUTPUT` contains "Saved working directory", warn the user: "Note: local changes were stashed. Run `git stash pop` in the skill directory to restore them."
